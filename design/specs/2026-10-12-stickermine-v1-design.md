@@ -300,7 +300,7 @@ Placement array order is the z-order, back to front. `lastStyle` is set when a s
 
 ### Updater
 
-Ported from Pullcord (not Key54, which still has the name-based kill bug). It polls `api.github.com/repos/grokcodile/stickermine/releases/latest` only on Home open and once about 6 s after a login launch, and offers a release only if its assets include `Stickermine.dmg`. If installed by the Homebrew cask (Caskroom entry and running from `/Applications/Stickermine.app`), it upgrades through a detached helper that kills by PID, runs `brew upgrade --cask`, clears quarantine and relaunches; otherwise it downloads the DMG to `~/Downloads` (HTTP 200 only) and opens it. 180 s watchdog. Before spawning the helper, it runs the termination cleanup in section 5.10. Keep `Info.plist`'s version ahead of the newest tag.
+Ported from Pullcord's updater, whose helper quits the app by PID. It polls `api.github.com/repos/grokcodile/stickermine/releases/latest` only on Home open and once about 6 s after a login launch, and offers a release only if its assets include `Stickermine.dmg`. If installed by the Homebrew cask (Caskroom entry and running from `/Applications/Stickermine.app`), it upgrades through a detached helper that kills by PID, runs `brew upgrade --cask`, clears quarantine and relaunches; otherwise it downloads the DMG to `~/Downloads` (HTTP 200 only) and opens it. 180 s watchdog. Before spawning the helper, it runs the termination cleanup in section 5.10. Keep `Info.plist`'s version ahead of the newest tag.
 
 ### First run
 
