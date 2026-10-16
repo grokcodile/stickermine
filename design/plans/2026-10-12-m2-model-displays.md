@@ -15,7 +15,7 @@
 Signature changes (every existing call site still compiles):
 
 1. `StickerManager.place(sticker:style:centerOnScreen:pointSize:)` returns `UUID?` (`@discardableResult`): the new placement's ID, or nil when the library is read-only, the sticker is unknown or there is no display. M4's placement session needs the ID for the support-ask counter and logging.
-2. `PanelPolicy.makeStickerPanel(contentRect: NSRect, hideFromSharing: Bool = true) -> StickerPanel`. Verified while writing this plan (macOS 27.2, Xcode 27 beta test host): in a running app, a window whose `sharingType` was once set to `.none` ignores a later `.readOnly` (the getter stays `.none`), while a window created with `.readOnly` can switch either way. So a panel must start with the right value, and `StickerManager.setSharingHidden(false)` recreates the panels that stay hidden. M1's comment in `PanelPolicy` ("StickerManager switches live panels to .readOnly when it is off") was wrong on 27.2; Task 11 replaces it.
+2. `PanelPolicy.makeStickerPanel(contentRect: NSRect, hideFromSharing: Bool = true) -> StickerPanel`. Verified while writing this plan (macOS 27.2, Xcode 27 beta test host): once a window's `sharingType` has been set to `.none`, a later `.readOnly` leaves the getter at `.none` whatever the window was created with (a panel created `.readOnly` switches to `.none` but not back). Research claim C1 saw capture follow a none→readOnly flip, so the window server may honour it and only the getter lag; recreating the panel is correct either way. So a panel must start with the right value, and `StickerManager.setSharingHidden(false)` recreates the panels that stay hidden. M1's comment in `PanelPolicy` ("StickerManager switches live panels to .readOnly when it is off") was wrong on 27.2; Task 11 replaces it.
 3. `DisplayInfo` gains `let inMirrorSet: Bool` (`CGDisplayIsInMirrorSet`), with an explicit initializer whose `inMirrorSet` parameter defaults to `false`: the reconcile snapshot is `[uuid: (frame, backingScaleFactor, mirror state)]` (spec section 11).
 4. `LibraryController.init(store: LibraryStore, saveDelay: TimeInterval = 0.5)` and `StickerManager.init(library:screens:renderer:reconcileDelay: TimeInterval = 0.45)`: the delays are injectable for tests; the contract's calls are unchanged.
 
@@ -64,7 +64,7 @@ Milestone-specific failure modes:
 
 1. **A display event writes the library**, through AppKit moving a window, the `lastSeen` refresh or a fingerprint adoption. Expect: after any number of display events the file is byte-identical; only a user action writes. Pinned by `aDisconnectedDisplaysPanelsAreOrderedOutKeptAndNothingIsWritten`, `aReconnectedDisplayGetsTheSamePanelsBackInPlace` and `aResolutionChangeBorrowsTheClosestSizeAndWritesNothing` (each compares the file's bytes and `hasPendingSave`), `aFingerprintAdoptedDisplayShowsTheOldRecordUntilAUserEdit`, `LibraryControllerTests.metadataRefreshesWaitForTheNextSave`, and the hash column of Task 13's checklist.
 2. **A newer or corrupt `library.json` is overwritten or lost.** Expect: a newer file is shown and never written, renamed or repaired; a corrupt file is renamed aside, never deleted. Pinned by `LibraryStoreTests.aNewerLibraryIsShownButNeverWritten`, `aNewerLibraryThisBuildCantReadIsStillNeverRenamed`, `aCorruptFileIsSetAsideAndHistoryRebuiltFromThePNGs`, `LibraryControllerTests.aReadOnlyLibraryIgnoresChanges`, `StickerManagerTests.aNewerLibraryIsShownButCantBeEdited`, and Task 12 Step 8, items 9–10.
-3. **Turning "Hide stickers from screen sharing" off doesn't un-hide them** (the sticky `.none` above). Expect: after the setting goes off, every sticker panel reports `.readOnly` and is in the same place. Pinned by `StickerManagerTests.theSharingSettingAppliesToEveryPanelLive`, `PanelPolicyTests.aPanelForVisibleSharingStartsReadOnly`, and Task 12 Step 8, item 8.
+3. **Turning "Hide stickers from screen sharing" off doesn't un-hide them** (the sticky `.none` above). Expect: after the setting goes off, every sticker panel reports `.readOnly` and is in the same place. Pinned by `StickerManagerTests.theSharingSettingAppliesToEveryPanelLive`, `StickerManagerTests.aPanelRecreatedForSharingKeepsItsBitmap` (the new panel shows the old bitmap at once, with no new render), `PanelPolicyTests.aPanelForVisibleSharingStartsReadOnly`, and Task 12 Step 8, item 8.
 
 ## Files
 
@@ -3092,7 +3092,7 @@ git commit -m "Add ScreenProvider over NSScreen.screens and a fake for tests" -m
     struct Candidate { let contentRect: CGRect; let frame: CGRect; let mask: AlphaMask?; let wholeFrame: Bool }
     private(set) weak var activePanel: NSPanel?
     init(targets: @escaping () -> [Target])                    // front to back
-    func prepare(_ panel: NSPanel)                             // ignoresMouseEvents = true
+    func prepare(_ panel: NSPanel)                             // ignoresMouseEvents = true; adds a mouse-moved tracking area
     func forget(_ panel: NSPanel)
     func start(); func stop()                                  // global + local mouse-moved/dragged monitors
     func update(at point: NSPoint)
@@ -3100,7 +3100,7 @@ git commit -m "Add ScreenProvider over NSScreen.screens and a fake for tests" -m
 }
 ```
 
-Spec section 9: in this hidden mode (`clickThroughFallback`, read at launch) every sticker gets an explicit `ignoresMouseEvents = true`, and the sticker whose opaque pixels are under the cursor is switched to `false`. Mouse-move monitors need no permission. This file is the only one allowed to write the flag, so M1's source scan names it.
+Spec section 9: in this hidden mode (`clickThroughFallback`, read at launch) every sticker gets an explicit `ignoresMouseEvents = true`, and the sticker whose opaque pixels are under the cursor is switched to `false`. Mouse-move monitors need no permission. Once a sticker takes the mouse, moves over its rectangle go to this app, which the global monitor never sees, so `prepare` also gives each sticker view an always-active mouse-moved tracking area that feeds the local monitor. This file is the only one allowed to write the flag, so M1's source scan names it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3156,6 +3156,10 @@ struct ClickThroughFallbackTests {
         fallback.prepare(front)
         fallback.prepare(back)
         #expect(front.ignoresMouseEvents && back.ignoresMouseEvents)
+        // Moves over a sticker that has taken the mouse reach the local monitor only through this.
+        for panel in [front, back] {
+            #expect(panel.contentView?.trackingAreas.contains { $0.options.contains([.mouseMoved, .activeAlways]) } == true)
+        }
         fallback.update(at: CGPoint(x: 40_050, y: 50))
         #expect(!front.ignoresMouseEvents)
         #expect(back.ignoresMouseEvents)
@@ -3250,9 +3254,16 @@ final class ClickThroughFallback {
         self.targets = targets
     }
 
-    /// Every sticker panel starts out ignoring the mouse.
+    /// Every sticker panel starts out ignoring the mouse. Its view also gets an
+    /// always-active mouse-moved tracking area: once a sticker takes the mouse,
+    /// moves over its own rectangle belong to this app, so the global monitor
+    /// no longer sees them and only these events reach the local monitor.
     func prepare(_ panel: NSPanel) {
         panel.ignoresMouseEvents = true
+        if let view = panel.contentView {
+            view.addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeAlways, .inVisibleRect],
+                                                owner: view, userInfo: nil))
+        }
     }
 
     func forget(_ panel: NSPanel) {
@@ -3383,7 +3394,7 @@ git commit -m "Add the hidden fallback click-through mode" -m "Co-Authored-By: C
 How it works (spec sections 9 and 11):
 
 - **Reconcile** (`reconcileNow`): reads the usable displays; if there are none (only a ghost, or a moment mid-change) it changes nothing. Otherwise it rebuilds the in-memory ID → UUID map and which record each display shows (its own, or a fingerprint adoption, in memory only), diffs a `[uuid: DisplaySnapshot]` against the last one, closes panels whose placement left the model, orders out (and keeps) panels whose display is gone, creates missing panels for present displays, re-resolves a placement's layout only when its display's snapshot changed (or the panel is new, or its placement now shows on another display), and **always** re-applies level and frame (only when different) and orders panels in, back to front, when any of a display's panels isn't visible. It asks for a render only when the `RenderRequest` changed. A returning recorded display gets its `lastSeen` and `name` refreshed quietly (written with the next save).
-- **Display events**: `didChangeScreenParametersNotification` restarts the 450 ms timer; wake, screens-did-wake and `com.apple.screenIsUnlocked` restart it and do so again 1.5 s later; the Core Graphics callback ignores every Begin pass and acts only on an after-pass with the Remove flag, ordering out that display's panels at once. With `rebuildsPanelsAfterSystemEvents` on, every panel is also closed and recreated 1.5 s after those events, ending editing first.
+- **Display events**: `didChangeScreenParametersNotification` restarts the 450 ms timer; wake, screens-did-wake and `com.apple.screenIsUnlocked` restart it and do so again 1.5 s later; the Core Graphics callback ignores every Begin pass and acts only on an after-pass with the Remove flag, ordering out that display's panels at once. With `rebuildsPanelsAfterSystemEvents` on, every panel is also closed and recreated (ending editing first) 1.5 s after a wake or unlock, and 1.5 s after a reconcile that finds a display added, removed or changed. A screen-parameters notification alone never rebuilds, because the Dock and EDR-headroom changes post it too (research D7/D8); a rebuild's own reconcile starts from an empty snapshot, so it never schedules another.
 - **User actions**: `place` creates the display's record on its first placement (or saves a fingerprint adoption as a re-key) and appends the placement on top with `poses = [size: pose]`; `remove` deletes one placement (a tutorial sticker is deleted outright); `deleteSticker` closes the sticker's panels, deletes its PNG, then removes the entry and every placement of it on every display from the index (PNG first, then the index). A read-only (newer) library refuses all three. Every render completion checks that its placement still exists and that it is the newest request.
 - **Sharing**: `setSharingHidden(true)` applies live; `setSharingHidden(false)` recreates the panels that stay hidden (contract change 2).
 
@@ -3469,6 +3480,8 @@ struct StickerManagerTests {
         #expect(panel.level == PanelPolicy.stickerLevel)
         #expect(panel.sharingType == .none)
         #expect(h.manager.panel(for: away.id) == nil)
+        // A display without a record shows nothing and gets no record (spec section 11).
+        #expect(h.library.library.displays[Fixtures.mainUUID] == nil)
     }
 
     @Test func floatOnTopPlacementsUseTheFloatingLevel() throws {
@@ -3741,7 +3754,7 @@ struct StickerManagerTests {
         let hidden = try #require(h.manager.panel(for: here.id))
         #expect(hidden.sharingType == .none)
         h.manager.setSharingHidden(false)
-        // A hidden window can't be un-hidden on macOS 27.2: the panel is recreated in place.
+        // On macOS 27.2 a panel once set to .none keeps reporting .none: it is recreated in place.
         let shown = try #require(h.manager.panel(for: here.id))
         #expect(shown.sharingType == .readOnly)
         #expect(shown.isVisible)
@@ -3754,6 +3767,29 @@ struct StickerManagerTests {
         #expect(h.manager.panel(for: here.id) === shown)
         #expect(shown.sharingType == .none)
         #expect(h.manager.panel(for: added)?.sharingType == sharingNone)
+    }
+
+    @Test func aPanelRecreatedForSharingKeepsItsBitmap() async throws {
+        let here = placement(sticker)
+        let request = RenderRequest(sticker: sticker, style: .outline, flipped: false, rotation: 0,
+                                    pointSize: CGSize(width: 200, height: 100), backingScale: 2)
+        let rendered = try await StyleRenderer(masterProvider: { _ in Fixtures.image(width: 400, height: 200) })
+            .render(request)
+        // From here on nothing suspends, so no other test sees these panels.
+        let h = try Harness(model([here]), displays: [Fixtures.external()])
+        defer { h.finish() }
+        h.manager.restoreAll()
+        h.manager.commitRender(rendered, for: request, placement: here.id)
+        let renders = h.manager.renderRequestsIssued
+        let old = try #require(h.manager.panel(for: here.id))
+        h.manager.setSharingHidden(false)
+        // On macOS 27.2 the old panel keeps reporting .none, so it is replaced.
+        let new = try #require(h.manager.panel(for: here.id))
+        #expect(new !== old)
+        let view = try #require(new.contentView as? StickerView)
+        #expect(view.contentLayer.contents != nil)
+        #expect(view.contentPointSize == CGSize(width: 200, height: 100))
+        #expect(h.manager.renderRequestsIssued == renders)
     }
 
     @Test func fallbackModePanelsIgnoreTheMouseUntilHovered() throws {
@@ -3885,8 +3921,9 @@ In `Stickermine/Stickers/PanelPolicy.swift`, replace the whole function from its
     /// The only way a sticker window is created. `hideFromSharing` is the
     /// "Hide stickers from screen sharing and screenshots" setting (default on)
     /// at creation time. A panel must start with the right value: on macOS 27.2
-    /// a window that was once set to `.none` ignores a later `.readOnly`, so
-    /// StickerManager recreates panels when the setting is turned off.
+    /// a window that was once set to `.none` keeps reporting `.none` after a
+    /// later `.readOnly`, so StickerManager recreates panels when the setting
+    /// is turned off.
     static func makeStickerPanel(contentRect: NSRect, hideFromSharing: Bool = true) -> StickerPanel {
         let panel = StickerPanel(
             contentRect: contentRect,
@@ -4042,7 +4079,12 @@ final class StickerManager {
         recordForDisplay = Self.recordAssignments(displays: displays, records: model.displays)
         let snapshot = presentDisplays.mapValues(DisplaySnapshot.init)
         let changed = Set(snapshot.keys.filter { lastSnapshot[$0] != snapshot[$0] })
+        // A display was added, changed or removed (the count drops). lastSnapshot is
+        // empty after launch, closeAllPanels() and rebuildAllPanels(): those never
+        // schedule a rebuild, so a rebuild can't loop.
+        let displaysChanged = !lastSnapshot.isEmpty && (!changed.isEmpty || lastSnapshot.count != snapshot.count)
         lastSnapshot = snapshot
+        if Self.rebuildsPanelsAfterSystemEvents, displaysChanged { scheduleRebuild() }
 
         var displayForRecord: [String: DisplayInfo] = [:]
         for (displayUUID, recordKey) in recordForDisplay {
@@ -4222,9 +4264,11 @@ final class StickerManager {
     // MARK: Settings
 
     /// "Hide stickers from screen sharing and screenshots", applied live.
-    /// Hiding is set on each panel. A panel that keeps hiding after `.readOnly`
-    /// (macOS 27.2 ignores it on a window once set to `.none`) is closed and
-    /// recreated from the model with the new setting.
+    /// Hiding is set on each panel. A panel that keeps reporting `.none` after
+    /// `.readOnly` (macOS 27.2, on a window once set to `.none`) is replaced by
+    /// a new panel created with the new setting, which takes over the old one's
+    /// bitmap, layout and render request, so the sticker never shows empty while
+    /// a render runs.
     func setSharingHidden(_ hidden: Bool) {
         sharingHidden = hidden
         let wanted: NSWindow.SharingType = hidden ? .none : .readOnly
@@ -4235,8 +4279,27 @@ final class StickerManager {
         }
         guard !stuck.isEmpty else { return }
         if let editing = editingPlacement, stuck.contains(editing) { endEditing(discardGesture: true) }
-        stuck.forEach(tearDown)
+        let model = library.library
+        for id in stuck {
+            guard let old = entries[id], let placement = model.placement(id) else {
+                tearDown(id)
+                continue
+            }
+            let contents = old.view.contentLayer.contents
+            let pointSize = old.view.contentPointSize
+            let shadow = old.view.layerShadow
+            let frame = old.panel.frame
+            tearDown(id)
+            let fresh = makeEntry(for: placement)
+            fresh.displayUUID = old.displayUUID
+            fresh.layout = old.layout
+            fresh.request = old.request
+            fresh.alphaMask = old.alphaMask
+            if let contents { fresh.view.showContents(contents, pointSize: pointSize, shadow: shadow) }
+            fresh.panel.setFrame(frame, display: false)
+        }
         log.notice("recreated \(stuck.count) panels to change their sharing type")
+        // Orders the new panels in, back to front; nothing is re-resolved or re-rendered.
         reconcileNow()
     }
 
@@ -4291,23 +4354,28 @@ final class StickerManager {
         observers.append((center, token))
     }
 
-    /// A screen change, wake or unlock: restart the reconcile timer; after wake
-    /// and unlock check again 1.5 s later; rebuild if the spike said so.
+    /// A screen change, wake or unlock: restart the reconcile timer. After wake
+    /// and unlock, check again 1.5 s later and, if the spike said so, rebuild.
+    /// A screen-parameters notification alone never rebuilds: the Dock and EDR
+    /// headroom changes post it too. The reconcile schedules the rebuild when it
+    /// finds a display added, removed or changed.
     func systemEvent(recheckLater: Bool) {
         scheduleReconcile()
-        if recheckLater {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.systemEventRecheckDelay) { [weak self] in
-                MainActor.assumeIsolated { self?.scheduleReconcile() }
-            }
+        guard recheckLater else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.systemEventRecheckDelay) { [weak self] in
+            MainActor.assumeIsolated { self?.scheduleReconcile() }
         }
-        if Self.rebuildsPanelsAfterSystemEvents {
-            rebuildWork?.cancel()
-            let work = DispatchWorkItem { [weak self] in
-                MainActor.assumeIsolated { self?.rebuildAllPanels() }
-            }
-            rebuildWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.systemEventRecheckDelay, execute: work)
+        if Self.rebuildsPanelsAfterSystemEvents { scheduleRebuild() }
+    }
+
+    /// Closes and recreates every panel 1.5 s from now (restarted by each call).
+    private func scheduleRebuild() {
+        rebuildWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.rebuildAllPanels() }
         }
+        rebuildWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.systemEventRecheckDelay, execute: work)
     }
 
     /// Only an after-pass with the Remove flag acts: the Begin pass fires for
@@ -4461,7 +4529,7 @@ final class StickerManager {
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer xcodebuild test -project Stickermine.xcodeproj -scheme Stickermine -destination 'platform=macOS,arch=arm64' -derivedDataPath build/DerivedData
 ```
 
-Expected: `Test run with 143 tests in 18 suites passed` and `** TEST SUCCEEDED **`. No window appears on screen during the run: every test display sits at x ≥ 40 000 pt.
+Expected: `Test run with 144 tests in 18 suites passed` and `** TEST SUCCEEDED **`. No window appears on screen during the run: every test display sits at x ≥ 40 000 pt.
 
 - [ ] **Step 6: Commit**
 
@@ -4702,7 +4770,7 @@ Step 9 writes the two values into the commit message.
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer xcodebuild test -project Stickermine.xcodeproj -scheme Stickermine -destination 'platform=macOS,arch=arm64' -derivedDataPath build/DerivedData
 ```
 
-Expected: `Test run with 144 tests in 18 suites passed` and `** TEST SUCCEEDED **`; no sticker appears on screen (the test host skips startup).
+Expected: `Test run with 145 tests in 18 suites passed` and `** TEST SUCCEEDED **`; no sticker appears on screen (the test host skips startup).
 
 - [ ] **Step 7: Build**
 
@@ -4722,9 +4790,9 @@ LIB="$HOME/Library/Application Support/com.ethan.stickermine"
 if [ -e "$LIB" ]; then mv "$LIB" "$LIB.before-m2"; fi
 ```
 
-(Any earlier folder is kept as `com.ethan.stickermine.before-m2`.) In a second terminal: `log stream --style compact --predicate 'subsystem == "com.ethan.stickermine"'`. Quitting with `pkill` sends SIGTERM, which skips `applicationWillTerminate`; the 0.5 s debounced save has long run by then, which is exactly the spec's point that nothing may depend on that hook.
+(Any earlier folder is kept as `com.ethan.stickermine.before-m2`; Task 13 Step 5 puts it back.) In a second terminal: `log stream --style compact --predicate 'subsystem == "com.ethan.stickermine"'`. Quitting with `pkill` sends SIGTERM, which skips `applicationWillTerminate`; the 0.5 s debounced save has long run by then, which is exactly the spec's point that nothing may depend on that hook.
 
-1. Put the pointer in the middle of the main display (the one with the menu bar), then run `open build/Stickermine.app --args -debugPlaceMaple`. Expected: within about a second Maple appears centred on the pointer at 310 × 455 pt (smaller only on a display under 910 pt tall, where she is fitted to half its height), with no shadow (M3 adds styles) and no Dock icon. Log, in this order: `reconcile #1: 1 displays, 1 changed, 0 panels` (the display count is however many are connected), `library fresh: 0 stickers`, `ordered in` followed by 8 hex digits and `at {{x, y}, {310, 455}}`, `reconcile #2: 1 displays, 0 changed, 1 panels`, then `placed Maple` with two UUIDs.
+1. Put the pointer in the middle of the main display (the one with the menu bar), then run `open build/Stickermine.app --args -debugPlaceMaple`. Expected: within about a second Maple appears centred on the pointer at 310 × 455 pt (smaller only on a display under 910 pt tall, where she is fitted to half its height), with no shadow (M3 adds styles) and no Dock icon. Log, in this order: `reconcile #1: N displays, N changed, 0 panels` (N = the number of connected displays), `library fresh: 0 stickers`, `ordered in` followed by 8 hex digits and `at {{x, y}, {310, 455}}`, `reconcile #2: N displays, 0 changed, 1 panels`, then `placed Maple` with two UUIDs.
 2. After 2 s: `ls "$LIB/stickers"` shows one `<UUID>.png`; `sips -g dpiWidth "$LIB"/stickers/*.png` shows `dpiWidth: 144.000`; `cat "$LIB/library.json"` shows `"version" : 1`, one sticker with `"pixelWidth" : 620`, `"pixelHeight" : 910`, `"pixelsPerPoint" : 2` and `"lastStyle" : "shadow"`, and under `"displays"` one record (the main display's UUID, its name, vendor, model, serial) holding one placement with `"style" : "shadow"`, `"rotation" : 0` and a `"poses"` object with exactly one key, the main display's point size (for example `"1512x982"`).
 3. With another app frontmost, click Maple's opaque pixels once, then double-click them. Expected: nothing happens and the other app stays frontmost (editing arrives in M5).
 4. Put a desktop file icon under a transparent part of Maple's window (beside her ear, inside the window's rectangle) and click it. Expected: the icon is selected.
@@ -4748,7 +4816,7 @@ if [ -e "$LIB" ]; then mv "$LIB" "$LIB.before-m2"; fi
     open build/Stickermine.app
     ```
     Expected: no Maple on screen (a corrupt file loses its placements, by design); log `library recovered from a corrupt library.json: N stickers` (N = the number of PNGs); `ls "$LIB"` shows `library.corrupt-<date>.json` and `library.backup.json` but no `library.json` (nothing changed, so nothing was saved). Restore: `pkill -x Stickermine; rm "$LIB"/library.corrupt-*.json; mv "$LIB/library.backup.json" "$LIB/library.json"; open build/Stickermine.app`. Expected: every Maple is back.
-11. Fallback click-through: `defaults write com.ethan.stickermine clickThroughFallback -bool true; pkill -x Stickermine; open build/Stickermine.app`. Repeat item 4. Expected: the icon under the transparent part is selected. Then put an icon under Maple's opaque pixels and click her there. Expected: the icon is not selected. Finally `defaults delete com.ethan.stickermine clickThroughFallback; pkill -x Stickermine; open build/Stickermine.app`.
+11. Fallback click-through: `defaults write com.ethan.stickermine clickThroughFallback -bool true; pkill -x Stickermine; open build/Stickermine.app`. Repeat item 4. Expected: the icon under the transparent part is selected. Then put an icon under Maple's opaque pixels and click her there. Expected: the icon is not selected. Then move the pointer onto Maple's opaque pixels, slide it (without leaving her window) onto the transparent part beside her ear where an icon sits, and click. Expected: the icon is selected (the sticker released the mouse when the pointer left her opaque pixels). Finally `defaults delete com.ethan.stickermine clickThroughFallback; pkill -x Stickermine; open build/Stickermine.app`.
 12. Leave Stickermine running with its Maples for Task 13.
 
 If anything differs, stop and debug it (superpowers:systematic-debugging) before committing; fixes get a failing unit test first where one can be written.
@@ -4790,7 +4858,7 @@ M2's `StickerManager` keeps sticker windows in step with displays (spec section 
 1. `pkill -x Stickermine || true`, then `./build.sh`.
 2. In a second terminal: `log stream --style compact --predicate 'subsystem == "com.ethan.stickermine" AND category == "stickers"'`.
 3. In bash or zsh: `LIB="$HOME/Library/Application Support/com.ethan.stickermine"`.
-4. One Maple per display: with the pointer on the main display, `open build/Stickermine.app --args -debugPlaceMaple`; then `pkill -x Stickermine`, move the pointer onto the external display and run the same command again. (Task 12 left this state behind if it ran item 6.) Without an external display, place the one Maple only; rows 1–4 and 8–12 are then `not run: no external display`.
+4. One Maple per display: with the pointer on the main display, `open build/Stickermine.app --args -debugPlaceMaple`; then wait 2 s (the debounced save), then `pkill -x Stickermine`, move the pointer onto the external display and run the same command again. (Task 12 left this state behind if it ran item 6.) Without an external display, place the one Maple only; rows 1–4 and 8–12 are then `not run: no external display`.
 5. `pkill -x Stickermine; open build/Stickermine.app`. Copy the `ordered in <id> at {{x, y}, {w, h}}` lines into the Frames table below: they are the reference for "the same place".
 6. Wait 2 s, then `shasum "$LIB/library.json"` and write the hash below. Every row ends with the same command; the hash must never change.
 
@@ -4812,13 +4880,13 @@ M2's `StickerManager` keeps sticker windows in step with displays (spec section 
 
 | # | Event | How | Expected | Result | Hash unchanged? |
 |---|---|---|---|---|---|
-| 1 | Unplug the external display | Unplug its cable. | Its Maple vanishes and does not stay on the remaining display (a flash of under half a second while macOS rearranges windows is tolerable; write it down if seen). Log: `ordered out <id>: display <UUID> is gone` within about 0.5 s, possibly preceded by `display <UUID> removed; its stickers are ordered out` from the Core Graphics callback. | | |
+| 1 | Unplug the external display | Unplug its cable. | Its Maple vanishes and does not stay on the remaining display (a flash of under half a second while macOS rearranges windows is tolerable; write it down if seen). Log: `display <UUID> removed; its stickers are ordered out` (Core Graphics callback) or, if that callback didn't fire, `ordered out <id>: display <UUID> is gone`; then a `reconcile #n` line within about 0.5 s. | | |
 | 2 | Replug it | Plug the same cable back into the same port. | The Maple returns. Log: `ordered in <id> at …` with its setup frame. | | |
 | 3 | Replug on another port | Unplug, then plug into a different port. | Same as row 2 (the display UUID is expected to stay the same; if the Maple doesn't return, note the new UUID from `reconcile` and `library.json`). | | |
 | 4 | Lid closed (MacBook with external display, keyboard and mouse) | Close the lid; wait 10 s; open it. | While closed: the built-in display's Maple is ordered out; the external one doesn't move. After opening: the built-in Maple is back with its setup frame. | | |
 | 5 | Sleep and wake | Apple menu › Sleep; wait 30 s; wake and unlock. | Both Maples drawn at their setup frames. A desktop icon under a Maple's opaque pixels can't be clicked (she still absorbs clicks). Log: a `reconcile` shortly after wake and another about 1.5 s later; with the rebuild switch on, new `ordered in` lines about 1.5 s after wake. | | |
 | 6 | Lock and unlock | ⌃⌘Q; wait 10 s; unlock. | Same as row 5. | | |
-| 7 | Resolution change | System Settings › Displays: pick another "Larger Text / More Space" option for the main display; then restore the original. | While changed: the main display's Maple stays on that display at the same relative position, scaled with the display and fully on screen (no `ordered in` line; a `reconcile` line with at least `1 changed`). After restoring: back at the setup frame. | | |
+| 7 | Resolution change | System Settings › Displays: pick another "Larger Text / More Space" option for the main display; then restore the original. | While changed: the main display's Maple stays on that display at the same relative position, scaled with the display and fully on screen (a `reconcile` line with at least `1 changed`; no `ordered in` line, except that with the rebuild switch on every Maple is recreated about 1.5 s later and logs one). After restoring: back at the setup frame. | | |
 | 8 | Mirroring on | Displays: mirror one display onto the other. | Only the mirror primary's own Maple shows (on both panels); the other Maple is ordered out; nothing lands on the wrong display. | | |
 | 9 | Mirroring off | Stop mirroring. | Both Maples at their setup frames. | | |
 | 10 | Arrangement change | Displays › Arrange: drag the external display to the other side; then put it back. | Each Maple stays on its own display at the same spot on that display (its global frame origin changes with the arrangement, its place on the display doesn't). | | |
@@ -4845,6 +4913,20 @@ For a failed row: reproduce it in `StickerManagerTests` with `FakeScreens` first
 git add design/display-checks.md
 git commit -m "Record the M2 display checks on real hardware" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
+
+- [ ] **Step 5: Put the real library back**
+
+The debug Maples must not stay in Ethan's real library: once M4 deletes `DebugMaple` they would be ordinary history stickers, and M6's first run (which needs a `library.json` with no stickers) would never happen on this Mac.
+
+```bash
+pkill -x Stickermine || true
+LIB="$HOME/Library/Application Support/com.ethan.stickermine"
+mv "$LIB" "$LIB.m2-checks"
+if [ -e "$LIB.before-m2" ]; then mv "$LIB.before-m2" "$LIB"; fi
+ls "$HOME/Library/Application Support" | grep stickermine
+```
+
+Expected: `com.ethan.stickermine.m2-checks`, plus `com.ethan.stickermine` only if a folder existed before M2. Nothing to commit.
 
 ---
 
@@ -4873,7 +4955,7 @@ Expected: `Type-checking against MacOSX26.5.sdk...`, then `Building Stickermine.
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer xcodebuild test -project Stickermine.xcodeproj -scheme Stickermine -destination 'platform=macOS,arch=arm64' -derivedDataPath build/DerivedData
 ```
 
-Expected: `Test run with 144 tests in 18 suites passed` and `** TEST SUCCEEDED **`.
+Expected: `Test run with 145 tests in 18 suites passed` and `** TEST SUCCEEDED **`.
 
 - [ ] **Step 3: Update the index's Interface Contract**
 
@@ -4991,7 +5073,7 @@ final class LibraryStore {
 }
 ```
 
-(b) Replace the heading `### Rendering (M3)` with `### Rendering (M2 baseline, M3 styles)` and replace its whole code block (from `struct StyleParameters: Equatable {` to the closing `}` of `StyleRenderer`) with:
+(b) Under `### Rendering (M3)` (keep the heading: later plans anchor on it), replace its whole code block (from `struct StyleParameters: Equatable {` to the closing `}` of `StyleRenderer`) with:
 
 ```text
 struct StyleParameters: Equatable {                             // created in M2
@@ -5027,7 +5109,7 @@ final class StyleRenderer {                                     // M2 baseline: 
 }
 ```
 
-(c) In the code block under `### Stickers (M1 spike → M2/M3/M5)`, replace the line `    static func makeStickerPanel(contentRect: NSRect) -> StickerPanel` with `    static func makeStickerPanel(contentRect: NSRect, hideFromSharing: Bool = true) -> StickerPanel   // [M2] a window once .none stays hidden on 27.2`, and replace the lines from `@MainActor final class StickerManager {` to its closing `}` with:
+(c) In the code block under `### Stickers (M1 spike → M2/M3/M5)`, replace the line `    static func makeStickerPanel(contentRect: NSRect) -> StickerPanel` with `    static func makeStickerPanel(contentRect: NSRect, hideFromSharing: Bool = true) -> StickerPanel   // [M2] once .none, the getter stays .none on 27.2`, and replace the lines from `@MainActor final class StickerManager {` to its closing `}` with:
 
 ```text
 @MainActor final class StickerManager {
@@ -5099,10 +5181,10 @@ Check:
 ```bash
 grep -c 'hideFromSharing: Bool = true' design/plans/2026-10-12-stickermine-v1-plan.md
 grep -c '\[M2\]' design/plans/2026-10-12-stickermine-v1-plan.md
-grep -c 'Rendering (M2 baseline, M3 styles)' design/plans/2026-10-12-stickermine-v1-plan.md
+grep -c 'created in M2' design/plans/2026-10-12-stickermine-v1-plan.md
 ```
 
-Expected: `1`, a number above `30`, and `1`.
+Expected: `1`, a number above `30`, and `4` (StyleParameters, RenderRequest, RenderedSticker, and the MasterImage `pngData` line).
 
 - [ ] **Step 4: Commit locally**
 
@@ -5156,5 +5238,5 @@ Push only with Ethan's yes (`git push`).
 
 - **M3** replaces the drawing inside `StyleRenderer.render` per style (keeping `canvas(for:)`'s 2048 px cap and `clampAlphaAndBuildMask`), compiles the Puffy kernel in `prewarm()`, decides IOSurface or CGImage contents (spike rows 15–16), and makes `StickerView.show(_:shadow:style:)` build a `LayerShadow` from `shadow` (pixel values divided by the panel's backing scale; nil for `.none`). `StickerManager.commitRender` then passes `StyleParameters.forStickerPixels(longSide:sourceLongSide:)` instead of `nil`; `applyFrame` already adds `view.layerShadow?.margin`, so frames grow by the margin as soon as a shadow is shown. Re-render on `windowDidChangeBackingProperties` (a reconcile already re-renders when a display's backing scale changes).
 - **M4** deletes `Stickermine/App/DebugMaple.swift`, the `-debugPlaceMaple` branch in `AppDelegate` and the `DebugMaple` lines of `AppDelegateTests.theSpikeIsGoneAndOnlyTheDebugMaplePathRemains` (keep its spike checks). It adds `MasterImage.load(url:)` and `LoadedCapture` next to M2's members, writes a new master with `library.store.writePNG` off the main thread and then `library.mutate` on main (PNG before index), sets `lastStyle`, and gets the new placement's ID from `StickerManager.place`.
-- **M5** adds editing to `StickerManager` (it sets `editingPlacement`; replace the body of `endEditing(discardGesture:)` with the real gesture teardown). A user edit writes through `LayoutResolver.writing` (or `placing` for a cross-display drop) inside `library.mutate`, after `recordKeyForUserEdit(on:)` for the display it lands on (that saves a fingerprint re-key), then calls `refreshPanel(for:)`: reconcile keeps a cached layout until told. In the fallback mode an editing panel takes its whole frame (`panel.isEditing`), which `ClickThroughFallback` already honours.
-- **M6** moves the `hideFromSharing` and `clickThroughFallback` keys into `Settings`; its sharing toggle calls `setSharingHidden` (turning hiding off recreates the panels, ending any editing). Home shows the read-only notice when `library.loadResult` is `.readOnlyNewer`, uses `deleteSticker` for Delete from History with `library.library.placementCount(of:)` in the confirmation, flushes before the updater's helper, and builds tutorials under `LibraryStore.tutorialIDs`.
+- **M5** adds editing to `StickerManager` (it sets `editingPlacement`; replace the body of `endEditing(discardGesture:)` with the real gesture teardown). A user edit writes through `LayoutResolver.writing` (or `placing` for a cross-display drop) inside `library.mutate`, after `recordKeyForUserEdit(on:)` for the display it lands on (that saves a fingerprint re-key), then calls `refreshPanel(for:)`: reconcile keeps a cached layout until told. In the fallback mode an editing panel takes its whole frame (`panel.isEditing`), which `ClickThroughFallback` already honours. `reconcileNow()` must not fight a live gesture: while `editingPlacement` has a gesture in progress, skip `applyFrame` for that entry; when a reconcile, `handleDisplayRemoved` or `rebuildAllPanels` orders out or closes the editing panel, call `endEditing(discardGesture: true)` first (spec section 10, "Editing ending mid-gesture").
+- **M6** moves the `hideFromSharing` and `clickThroughFallback` keys into `Settings`; its sharing toggle calls `setSharingHidden` (turning hiding off recreates the panels with their bitmaps, ending any editing). Home shows the read-only notice when `library.loadResult` is `.readOnlyNewer`, uses `deleteSticker` for Delete from History with `library.library.placementCount(of:)` in the confirmation, flushes before the updater's helper, and builds tutorials under `LibraryStore.tutorialIDs`.
