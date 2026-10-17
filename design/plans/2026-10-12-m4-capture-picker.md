@@ -2961,6 +2961,32 @@ struct PickerModelTests {
         // and the session never hears of a confirmation after it ended.
         #expect(renderer.inFlightMasterCount == 0)
         #expect(confirmed == nil)
+
+        // Pressing 1 while Shadow and None's cutout (Fill holes off) is still
+        // computing: the session closes the picker on confirm, and only the
+        // confirmed cutout stays registered.
+        let slow = Calls()
+        let otherRenderer = StyleRenderer(masterProvider: { _ in nil })
+        let other = PickerModel(mode: .capture, subjects: [1], pixelsPerPoint: 2, renderer: otherRenderer, backingScale: 2,
+                                makeCutout: { source in
+                                    slow.add(source)
+                                    if source == .subjects([1], fillHoles: false) {
+                                        try? await Task.sleep(nanoseconds: 300_000_000)
+                                    }
+                                    return Masters.disc(diameter: 200)
+                                })
+        var placed: PickerModel.Confirmation?
+        other.onConfirm = { [weak other] confirmation in
+            placed = confirmation
+            other?.finish()   // what SessionCoordinator's closePicker() does
+        }
+        #expect(await Self.waitUntil { slow.sources.contains(.subjects([1], fillHoles: false)) })
+        other.confirm(.puffy)
+        #expect(await Self.waitUntil { placed != nil })
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        #expect(otherRenderer.inFlightMasterCount == 1)
+        if let placed { otherRenderer.setInFlightMaster(nil, for: placed.sticker) }
+        #expect(otherRenderer.inFlightMasterCount == 0)
     }
 
     @Test func rePlacingRendersTheStoredMasterUnderTheStickersID() async throws {
@@ -6091,7 +6117,7 @@ M4's capture flow (spec sections 5, 6, 7, 13 and 14) needs a person at the Mac: 
 | 11 | Busy | Press ⌘⇧5 (the system screenshot toolbar), then ⌃⌥⌘S. | HUD "Couldn’t start a capture"; log `screencapture exited 1`. (If macOS runs the second capture anyway, write that down.) Esc the toolbar. | |
 | 12 | Subjects | Capture two separate objects (two app icons, or two photos side by side). | Both tinted; Whole image off; four previews in the order Puffy, Outline, Shadow, None, numbered 1–4. Click one object: its tint fades to a faint one, the previews update within about 0.2 s. Click the other: Whole image turns on, both objects faintly tinted. Click an object: Whole image off, only that object strongly tinted. | |
 | 13 | Fill holes | In the same picker, hover each preview, then the capture; click Fill holes twice. | Hovering shows **On**, **On**, **Off**, **Off**; elsewhere **Auto**. First click: **On** for all four previews; second: **Off**. Disabled while Whole image is on. | |
-| 14 | Confirm and place | Press 2 without clicking the picker first. Move the pointer (onto the other display too, if there is one); click. | The Outline sticker under the cursor looks exactly like its preview; on the other display it re-fits to at most half that display. The click places it there; the app that was frontmost before is frontmost again (its menu bar is back). | |
+| 14 | Confirm and place | Press Esc to close row 13's picker. With Safari frontmost, capture an object and press 2 as soon as the picker appears, without clicking it. Move the pointer (onto the other display too, if there is one); click. | The 2 reaches the picker (no beep, nothing typed into Safari). The Outline sticker under the cursor looks exactly like its preview; on the other display it re-fits to at most half that display. The click places it there; the app that was frontmost before is frontmost again (its menu bar is back). | |
 | 15 | Quit mid-capture | ⌃⌥⌘S; while the crosshair is up, in a terminal: `osascript -e 'quit app "Stickermine"'`. Then `pgrep -x screencapture; ls "$TMPDIR"stickermine-*.png`; `open /Applications/Stickermine.app`. Then open a picker and use the menu bar icon's Quit. | The crosshair goes away with the app; `pgrep` prints nothing and `ls` finds nothing. Quit from the menu closes the picker and quits; that capture is not in `library.json`. | |
 | 16 | P3 colours | On a P3 display, capture a saturated red or green photo region; place it in None. Compare with Digital Color Meter ("Display native values"). | The sticker's colours match the original's. | |
 | 17 | Cancel placement | `grep -c '"lastStyle" : "shadow"' "$LIB/library.json"`; capture, press 3, then Esc; capture again, press 3, then right-click; wait a second and run the `grep` again. | Nothing is placed either time; the count went up by 2 (both stickers stay in history). | |
@@ -6147,7 +6173,7 @@ Expected: `com.ethan.stickermine.m4-checks` (plus earlier milestones' folders), 
 ### Task 19: Final build, full test run, contract update and CI dry run
 
 **Files:**
-- Modify: `design/plans/2026-10-12-stickermine-v1-plan.md` (Interface Contract)
+- Modify: `design/plans/2026-10-12-stickermine-v1-plan.md` (Interface Contract, and the M5 row of the milestone table)
 - Modify: `design/ci-dry-runs.md` (append a row)
 
 **Interfaces:**
@@ -6334,6 +6360,18 @@ and replace the line that starts with `@MainActor final class HotkeyCenter {` wi
     var inFlightMasterCount: Int { get }                                                            // [M4] tests: the picker lets go of them
 ```
 
+(d) In the milestone table at the top, so M5 can't miss the session gate (spec section 5.2), replace the end of the M5 row:
+
+```text
+editing-end rules | M2, M3, M4 |
+```
+
+with:
+
+```text
+editing-end rules, no double-click editing while `SessionCoordinator.isActive` (spec 5.2; M4 note) | M2, M3, M4 |
+```
+
 Check:
 
 ```bash
@@ -6341,9 +6379,10 @@ grep -c '\[M4\]' design/plans/2026-10-12-stickermine-v1-plan.md
 grep -c 'classify(file url: URL' design/plans/2026-10-12-stickermine-v1-plan.md
 grep -c 'setInFlightMaster' design/plans/2026-10-12-stickermine-v1-plan.md
 grep -c 'static func classify(fileExists' design/plans/2026-10-12-stickermine-v1-plan.md
+grep -c 'no double-click editing while `SessionCoordinator.isActive`' design/plans/2026-10-12-stickermine-v1-plan.md
 ```
 
-Expected: a number above `25`, then `1`, `1` and `0`.
+Expected: a number above `25`, then `1`, `1`, `0` and `1`.
 
 - [ ] **Step 4: Commit locally**
 
