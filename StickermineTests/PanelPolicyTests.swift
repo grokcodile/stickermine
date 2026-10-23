@@ -75,9 +75,19 @@ struct PanelPolicyTests {
 
     @Test func stickerCodeNeverWritesTheMouseEventFlagOrTheFloatingFlag() throws {
         let mouseFlag = #"ignoresMouseEvents\s*="#
-        for file in ["Stickers/PanelPolicy.swift", "Stickers/StickerPanel.swift"] {
-            let text = try SourceFiles.contents(of: file)
-            #expect(text.range(of: mouseFlag, options: .regularExpression) == nil, "\(file) writes ignoresMouseEvents")
+        // Every file in Stickers/ creates, fills or drives sticker panels. Only a file
+        // implementing the hidden click-through fallback (spec section 9) may write
+        // the flag, and it must be named here.
+        let fallbackFiles: Set<String> = []
+        let stickerFiles = SourceFiles.swiftFiles().filter {
+            $0.deletingLastPathComponent().lastPathComponent == "Stickers"
+                && !fallbackFiles.contains($0.lastPathComponent)
+        }
+        #expect(stickerFiles.count >= 3)
+        for url in stickerFiles {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            #expect(text.range(of: mouseFlag, options: .regularExpression) == nil,
+                    "\(url.lastPathComponent) writes ignoresMouseEvents")
         }
         let files = SourceFiles.swiftFiles()
         #expect(!files.isEmpty)
