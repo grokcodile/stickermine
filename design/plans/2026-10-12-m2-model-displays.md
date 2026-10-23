@@ -3175,34 +3175,7 @@ struct ClickThroughFallbackTests {
 }
 ```
 
-In `StickermineTests/PanelPolicyTests.swift`, replace the whole function that starts with `    @Test func stickerCodeNeverWritesTheMouseEventFlagOrTheFloatingFlag() throws {` (M1 Task 7's version, whose first lines declare `let fallbackFiles: Set<String> = []`) with this complete version; the only change is the file it allows:
-
-```swift
-    @Test func stickerCodeNeverWritesTheMouseEventFlagOrTheFloatingFlag() throws {
-        let mouseFlag = #"ignoresMouseEvents\s*="#
-        // Every file in Stickers/ creates, fills or drives sticker panels. Only a file
-        // implementing the hidden click-through fallback (spec section 9) may write
-        // the flag, and it must be named here.
-        let fallbackFiles: Set<String> = ["ClickThroughFallback.swift"]
-        let stickerFiles = SourceFiles.swiftFiles().filter {
-            $0.deletingLastPathComponent().lastPathComponent == "Stickers"
-                && !fallbackFiles.contains($0.lastPathComponent)
-        }
-        #expect(stickerFiles.count >= 3)
-        for url in stickerFiles {
-            let text = try String(contentsOf: url, encoding: .utf8)
-            #expect(text.range(of: mouseFlag, options: .regularExpression) == nil,
-                    "\(url.lastPathComponent) writes ignoresMouseEvents")
-        }
-        let files = SourceFiles.swiftFiles()
-        #expect(!files.isEmpty)
-        for url in files {
-            let text = try String(contentsOf: url, encoding: .utf8)
-            #expect(text.range(of: #"isFloatingPanel\s*="#, options: .regularExpression) == nil,
-                    "\(url.lastPathComponent) assigns isFloatingPanel, which rewrites the level")
-        }
-    }
-```
+`StickermineTests/PanelPolicyTests.swift` needs **no change** here. M1's final review (ledger `Final: fixed`) widened `stickerCodeNeverWritesTheMouseEventFlagOrTheFloatingFlag` to scan every app file in every folder, with the allowed writers listed by path in `PanelPolicyTests.mouseFlagWriters` (`Stickers/ClickThroughFallback.swift`, `Picker/PlacementSession.swift`, `UI/HUD.swift`, `Stickers/StickerPanel.swift`), so `ClickThroughFallback.swift` is already allowed. Every test count from this point in M2–M7 is **2 higher** than the plan states (M1's final review added `theMouseFlagPatternCatchesEveryWayOfWritingIt` and `aStickerPanelCountsEveryWriteOfTheTwoFlags`).
 
 - [ ] **Step 2: Run them to see them fail**
 

@@ -4,6 +4,8 @@ The M1 spike (spec section 18) checks the sticker window before any capture UI e
 
 ## Setup
 
+> **Not run yet (2026-10-23).** Ethan deferred this session; it is to be run before release. The spike harness (`SpikeController`, `-spike`) exists only up to commit `f771066`: M2 deletes it. To run it later, build that commit in a separate worktree: `git worktree add ../stickermine-spike f771066 && ../stickermine-spike/build.sh && open -g ../stickermine-spike/build/Stickermine.app --args -spike` (remove it afterwards with `git worktree remove ../stickermine-spike`). The environment table below describes the prepared run, not a completed one.
+
 1. `pkill -x Stickermine || true` (only one copy may run).
 2. `./build.sh` (Developer ID signed when the certificate is present).
 3. In a second terminal: `log stream --style compact --predicate 'subsystem == "com.ethan.stickermine" AND category == "spike"'`

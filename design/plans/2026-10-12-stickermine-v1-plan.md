@@ -24,6 +24,8 @@
 
 ## Global Constraints
 
+- **Execution notes (added during M1, binding for M2–M7):** work happens on branch `v1`; `main` holds only the design docs plus `release.yml` until a milestone is merged. Every CI dry run therefore dispatches with `gh workflow run release.yml --ref v1` and lists runs with `--branch v1` (wherever a plan says `--ref main` / `--branch main`, read `v1`). Ethan gave a standing yes to push `v1` and start that dry run at each milestone end; tags, releases, the tap, Pages and `main` still need his yes. M1's final review added two `PanelPolicyTests` tests, so every `Test run with N tests` count in M2–M7 is **N + 2**, and it widened the mouse-flag scan to all app files (allowed writers: `PanelPolicyTests.mouseFlagWriters`). `StickerPanel` counts writes of both flags (`mouseFlagWrites`, `floatingFlagWrites`): flow tests that create, place, hand over or edit sticker panels should expect both to stay 0 unless the hidden fallback mode is on (M4's `PlacementSession` especially, for the sticker panel it is handed).
+
 Every task in every milestone implicitly includes these (values copied from the spec):
 
 - macOS **26.0** minimum, **Apple Silicon only** (`arm64`). `LSMinimumSystemVersion` = `26.0` in the root `Info.plist`; project `MACOSX_DEPLOYMENT_TARGET` = `26.0`.
