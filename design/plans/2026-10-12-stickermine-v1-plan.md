@@ -18,7 +18,7 @@
 | M2 | `2026-10-12-m2-model-displays.md` | Library model, `LibraryStore` (load/save/repair/versioning), `LibraryController` (debounced saves), `LayoutResolver`, `DisplayRegistry` + `ScreenProvider`, `StyleParameters` (pure), a **baseline `StyleRenderer`** (every style renders as an unstyled, size-capped bitmap with an `AlphaMask`; M3 replaces the per-style rendering), `StickerManager` restoring placements as panels and reconciling display changes, plus a temporary debug path to place the bundled Maple image | M1 |
 | M3 | `2026-10-12-m3-styles.md` | Real style rendering inside `StyleRenderer` (Puffy kernel + fallback, Outline SDF, Shadow, None choke), layer shadow + padded frame in `StickerView`, IOSurface/CGImage contents, re-render on backing change, a debug style gallery | M2 |
 | M4 | `2026-10-12-m4-capture-picker.md` | `StatusItemController` (glyph asset, left-click capture, right-click menu with New Sticker and Quit), `HotkeyCenter` with the default ⌃⌥⌘S, `CaptureService` + `CaptureClassifier`, `PermissionPanel`, `HUD`, `CutoutEngine` (pass 1/2, mask sampler, hole fill, whole image, master PNG with DPI), `PickerPanel`, `PlacementSession`, `SessionCoordinator` | M2, M3 |
-| M5 | `2026-10-12-m5-editing.md` | `StickerEditor` (hit pad, drag, knob, pinch/rotate, limits, gesture lifecycle, re-bake), `ToolbarPill`, bring to front, Remove, cross-display drag, clamps, editing-end rules | M2, M3, M4 |
+| M5 | `2026-10-12-m5-editing.md` | `StickerEditor` (hit pad, drag, knob, pinch/rotate, limits, gesture lifecycle, re-bake), `ToolbarPill`, bring to front, Remove, cross-display drag, clamps, editing-end rules, no double-click editing while `SessionCoordinator.isActive` (spec 5.2; M4 note) | M2, M3, M4 |
 | M6 | `2026-10-12-m6-app-shell.md` | `Shortcut` storage + `ShortcutRecorder` + `SystemShortcuts`, `SingleInstance`, `LoginItem`, Home window (history grid, settings, About, Quit, update strip) and the menu's Open Stickermine…, `Updater`, delete from history, sharing toggle, hide-menu-bar-icon, first-run tutorials, support ask, termination cleanup, read-only (newer library) UI, app icon | M2–M5 |
 | M7 | `2026-10-12-m7-site-release.md` | `docs/` website, README, PRIVACY, TERMS, CONTACT, cask file, release checklist through `v1.0` and Pages | M1–M6 |
 
@@ -238,6 +238,8 @@ final class StyleRenderer: @unchecked Sendable {                // [M3] the four
     func renderNow(_ request: RenderRequest) throws -> RenderedSticker                             // [M3] synchronous, never on main
     var inscribedMeasurementCount: Int { get }; var lastPuffyPath: PuffyKernel.Path? { get }      // [M3] diagnostics
     func invalidateCache(for sticker: UUID)                                                         // [M3] a master changed under the same ID
+    func setInFlightMaster(_ image: CGImage?, for sticker: UUID)                                    // [M4] the picker's cutouts before their PNG exists; also forgets the inscribed radius
+    var inFlightMasterCount: Int { get }                                                            // [M4] tests: the picker lets go of them
     static let maxMaskLongSide: Int; static let alphaFloor: UInt8                                  // [M2] 512, 5
     static func canvas(for request: RenderRequest) -> (width: Int, height: Int, drawSize: CGSize, pointBounds: CGSize)   // [M2]; [M3] adds the rim's reach; uncapped pointBounds = width, height / backing scale
     static func clampAlphaAndBuildMask(pixels: UnsafeMutablePointer<UInt8>, width: Int, height: Int) -> AlphaMask   // [M2]
@@ -365,54 +367,149 @@ extension AppDelegate { static let clickThroughFallbackByDefault: Bool }   // [M
 
 ```swift
 enum CaptureOutcome: Equatable { case success(URL), controlHeldToClipboard, busyOrBlocked, cancelled }
-enum CaptureClassifier { static func classify(fileExists: Bool, fileSize: Int, exitStatus: Int32, pasteboardChanged: Bool) -> CaptureOutcome }
+enum CaptureClassifier {
+    static func classify(file url: URL, fileExists: Bool, fileSize: Int, exitStatus: Int32, pasteboardChanged: Bool) -> CaptureOutcome   // [M4] file: added
+}
 @MainActor final class CaptureService {
     func capture(completion: @escaping (CaptureOutcome) -> Void)   // waits for modifiers, runs screencapture
     func cancelRunning()
     var isRunning: Bool { get }
     static func deleteLeftovers()
+    struct Command { let executable: URL; let arguments: (URL) -> [String]; static let screencapture: Command }   // [M4]
+    static let filePrefix: String; static let modifierPollInterval: TimeInterval                                // [M4] "stickermine-", 0.02
+    init(command: Command = .screencapture, temporaryDirectory: URL = URL(fileURLWithPath: NSTemporaryDirectory()),
+         pasteboardChangeCount: @escaping () -> Int = …, modifiersHeld: @escaping () -> Bool = …,
+         modifierWait: TimeInterval = 1.0)                                                                       // [M4] all defaulted
+    @discardableResult static func deleteLeftovers(in directory: URL) -> Int                                     // [M4]
 }
 struct LoadedCapture { let image: CGImage; let pixelsPerPoint: Double }
 enum MasterImage {
-    static func load(url: URL) throws -> LoadedCapture
+    static func load(url: URL) throws -> LoadedCapture                             // [M4] ICC kept, decoded at once, DPI → ppp (2 when absent)
     static func pngData(_ image: CGImage, pixelsPerPoint: Double) throws -> Data   // writes DPI = 72 × ppp   [created in M2]
-    enum Failure: Error { case cannotEncode }                                      // [M2]
+    enum Failure: Error { case cannotEncode, unreadable }                          // [M2]; [M4] unreadable
     struct FileInfo: Equatable { let pixelWidth: Int; let pixelHeight: Int; let pixelsPerPoint: Double? }   // [M2]
     static func fileInfo(at url: URL) -> FileInfo?                                 // [M2] size and DPI without decoding
     static func pixelsPerPoint(fromDPI dpi: Double) -> Double?                     // [M2] DPI / 72, rounded to 0.01
     static func image(at url: URL) -> CGImage?                                     // [M2] thread-safe
+    static let cropPadding: Int                                                    // [M4] 2
+    static func alphaBounds(of image: CGImage) -> CGRect?                          // [M4] pixels, top-left origin
+    static func croppedToAlpha(_ image: CGImage, padding: Int = cropPadding) -> CGImage?   // [M4] alpha bounds + 2 px
 }
-enum MaskSampler { static func subject(atUnitTopLeft p: CGPoint, masks: [(index: Int, mask: CVPixelBuffer)]) -> Int? }
-enum HoleFiller { static func fill(alpha: inout [Float], width: Int, height: Int, edge: Int) }
-final class CutoutAnalysis {
+enum MaskSampler {
+    static func subject(atUnitTopLeft p: CGPoint, masks: [(index: Int, mask: CVPixelBuffer)]) -> Int?
+    static let threshold: Float                                                    // [M4] 0.5
+    static func value(in buffer: CVPixelBuffer, atUnitTopLeft p: CGPoint) -> Float?   // [M4]
+    static func bounds(of buffer: CVPixelBuffer) -> CGRect?                        // [M4] unit, top-left
+}
+enum HoleFiller {
+    static func fill(alpha: inout [Float], width: Int, height: Int, edge: Int)
+    static let defaultEdge: Int; static let threshold: Float                       // [M4] 3, 0.5
+}
+enum CutoutError: Error, Equatable { case emptySelection, released, emptyMask, renderFailed }   // [M4]
+final class CutoutAnalysis: @unchecked Sendable {
     let capture: LoadedCapture; let subjectIndices: [Int]
+    let displayImage: CGImage                                                      // [M4] at most 1024 px long, for the picker
+    init(capture: LoadedCapture, handler: ImageRequestHandler?, observation: InstanceMaskObservation?,
+         masks: [(index: Int, mask: CVPixelBuffer)], context: CIContext, perform: @escaping CutoutEngine.Perform)   // [M4]
     func subject(atUnitTopLeft p: CGPoint) -> Int?
     func highlightMask(for index: Int) -> CGImage?
     func cutout(selection: Set<Int>, fillHoles: Bool) async throws -> CGImage   // pass 2 when the bbox is small
     func wholeImage() -> CGImage                                 // alpha kept, corners rounded 4% of short side
+    func bounds(of selection: Set<Int>) -> CGRect?; static func refines(_ unitBounds: CGRect, width: Int, height: Int) -> Bool   // [M4]
+    var refinedCutoutCount: Int { get }; func release()                            // [M4] release: the picker closed
+    static let refineBelow: Double; static let refineMargin: Double                // [M4] 0.6, 0.08
+    static let cornerRadiusFraction: Double; static let displayLongSide: Int       // [M4] 0.04, 1024
 }
-final class CutoutEngine { func prewarm(); func analyze(_ capture: LoadedCapture) async -> CutoutAnalysis }
+final class CutoutEngine: @unchecked Sendable {
+    func prewarm(); func analyze(_ capture: LoadedCapture) async -> CutoutAnalysis
+    typealias Perform = @Sendable (ImageRequestHandler) async throws -> InstanceMaskObservation?   // [M4]
+    static let vision: Perform; init(perform: @escaping Perform = CutoutEngine.vision); let context: CIContext   // [M4]
+    static func warmUpImage() -> CGImage?                                          // [M4] the throwaway image prewarm() runs Vision on
+}
+enum CutoutSource: Hashable { case wholeImage, subjects(Set<Int>, fillHoles: Bool), stored }   // [M4] Picker/PickerModel.swift
+struct PickerState: Equatable {                                                    // [M4] spec 7's rules, pure
+    enum FillHolesDisplay: Equatable { case auto, on, off }
+    let subjects: [Int]; private(set) var selected: Set<Int>; private(set) var wholeImage: Bool
+    private(set) var fillHolesChoice: Bool?; private(set) var hovered: StickerStyle?
+    init(subjects: [Int]); var wholeImageLocked: Bool { get }; var fillHolesEnabled: Bool { get }
+    mutating func setWholeImage(_ on: Bool); mutating func click(subject: Int?); mutating func toggleFillHoles()
+    mutating func hover(_ style: StickerStyle, inside: Bool); func fillHoles(for style: StickerStyle) -> Bool
+    var fillHolesDisplay: FillHolesDisplay { get }; func source(for style: StickerStyle) -> CutoutSource
+}
+@MainActor final class PickerModel: ObservableObject {                            // [M4]
+    enum Mode: Equatable { case capture, restyle(sticker: UUID, highlight: StickerStyle) }
+    struct Preview { let request: RenderRequest; let rendered: RenderedSticker; let shadow: StyleParameters }
+    struct Confirmation { let sticker: UUID; let style: StickerStyle; let image: CGImage?; let pixelsPerPoint: Double }
+    static func forCapture(_ analysis: CutoutAnalysis, renderer: StyleRenderer, backingScale: CGFloat) -> PickerModel
+    static func forRestyle(_ record: StickerRecord, renderer: StyleRenderer, backingScale: CGFloat) -> PickerModel
+    @Published private(set) var state: PickerState; @Published private(set) var previews: [StickerStyle: Preview]
+    var onConfirm: ((Confirmation) -> Void)?; func confirm(_ style: StickerStyle); func finish()   // finish: drops cutouts still computing
+}
+extension StickerStyle { var displayName: String { get } }                       // [M4] Picker/PickerView.swift: "Puffy" "Outline" "Shadow" "None"
+@MainActor final class PreviewHost: NSView { func show(_ preview: PickerModel.Preview) }   // [M4] a StickerView that never takes clicks (M5's pill can reuse it)
+@MainActor final class PickerPanel: NSPanel                                       // [M4] [.borderless, .nonactivatingPanel]; canBecomeKey true, canBecomeMain false
+@MainActor final class PickerController {                                         // [M4] Picker/PickerPanel.swift
+    init(model: PickerModel); var onCancel: (() -> Void)?                          // Esc or ×
+    func show(near cursor: CGPoint, visibleFrame: CGRect); func close()
+}
+@MainActor final class PlacementPanel: NSPanel                                    // [M4] explicit ignoresMouseEvents = false; canBecomeKey true
+@MainActor final class PlacementView: NSView { var onPlace: (() -> Void)?; var onCancel: (() -> Void)? }   // [M4] takes every mouse-down
+@MainActor final class PlacementSession {                                         // [M4]
+    enum Outcome: Equatable { case placed(UUID), cancelled }
+    init(sticker: UUID, style: StickerStyle, natural: CGSize, sourceLongSide: Double, renderer: StyleRenderer,
+         stickers: StickerManager, screens: ScreenProvider, mouseLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation })
+    var onEnd: ((Outcome) -> Void)?; func start(); func place(); func cancel()
+    static func fittedSize(natural: CGSize, in frame: CGRect) -> CGSize           // half the display, scaled down only
+}
+protocol ScreenRecordingAccess { func preflight() -> Bool; @discardableResult func request() -> Bool }   // [M4]
+struct LiveScreenRecordingAccess: ScreenRecordingAccess                           // [M4] CGPreflightScreenCaptureAccess / CGRequestScreenCaptureAccess
+struct PermissionPanelState: Equatable {                                          // [M4] what the panel offers, pure
+    enum Action: Equatable { case requestAccess, openSettings, relaunch }
+    var didRequest: Bool; var cameBackWithoutAccess: Bool; var actions: [Action] { get }
+    static func whenShown(didRequest: Bool, panelIsUp: Bool, previous: PermissionPanelState) -> PermissionPanelState
+}
+@MainActor final class PermissionPanel: NSObject, NSWindowDelegate {              // [M4] Onboarding/PermissionPanel.swift
+    static let didRequestKey: String                                               // "didRequestScreenCapture"
+    init(access: ScreenRecordingAccess = LiveScreenRecordingAccess(), defaults: UserDefaults = .standard,
+         screens: ScreenProvider, openURL: @escaping (URL) -> Void = …)
+    func show(); func close(); func recheck(); var onGranted: (() -> Void)?
+}
+@MainActor final class HUD { static let shared: HUD; func show(_ message: String, symbol: String = …); func hide()   // [M4] UI/HUD.swift
+    static let controlHeldMessage: String; static let couldNotStartMessage: String   // [M4] spec 5.7's two HUD lines
+    static let readOnlyMessage: String; static let saveFailedMessage: String }       // [M4] newer library; master PNG not written
+@MainActor final class StatusItemController: NSObject {                           // [M4] App/StatusItemController.swift
+    init(shortcut: Shortcut?); var onCapture: (() -> Void)?; var onQuit: (() -> Void)?
+    var sessionActive: Bool; func setShortcut(_ shortcut: Shortcut?)
+}
 @MainActor final class SessionCoordinator {
-    init(capture: CaptureService, cutout: CutoutEngine, stickers: StickerManager, library: LibraryController, store: LibraryStore, renderer: StyleRenderer)
-    var isActive: Bool { get }
+    init(capture: CaptureService, cutout: CutoutEngine, stickers: StickerManager, library: LibraryController, store: LibraryStore, renderer: StyleRenderer,
+         screens: ScreenProvider? = nil, access: ScreenRecordingAccess = LiveScreenRecordingAccess(),
+         showMessage: ((String) -> Void)? = nil, presentPermission: (() -> Void)? = nil, restoresFocus: Bool = true)   // [M4] defaulted extras
+    var isActive: Bool { get }                                                     // M5: while true, double-clicks on stickers don't enter editing (spec 5.2)
     var onActiveChange: ((Bool) -> Void)?
-    func startCapture()
+    func startCapture(orderingOut window: NSWindow? = nil)                         // [M4] window (Home) ordered out before screencapture
     func startReplace(sticker: UUID)
     func cancel()
+    enum Stage: Equatable { case idle, capturing, analyzing, picking, saving, placing }; private(set) var stage: Stage   // [M4]
+    var onPlaced: ((_ placement: UUID, _ sticker: UUID) -> Void)?                 // [M4] M6's support-ask counter
+    private(set) var currentSticker: UUID?                                         // [M4] Delete from History cancels its session
 }
 ```
 
 ### Hotkeys and settings (`Shortcut` + `HotkeyCenter` in M4; `SystemShortcuts`, `Settings`, recorder in M6)
 
 ```swift
-struct Shortcut: Codable, Equatable {
+struct Shortcut: Codable, Equatable {                            // [M4] App/Shortcut.swift; encoded as {"k", "m"}
     var keyCode: UInt32; var modifiers: UInt32                  // Carbon mask
     static let defaultCapture: Shortcut                         // keyCode 1, controlKey|optionKey|cmdKey
     var label: String { get }                                    // "⌃⌥⌘S", glyph order ⌃ ⌥ ⇧ ⌘
     var isAcceptable: Bool { get }                               // contains ⌘ or ⌃, or is an F-key
+    static let fKeyCodes: [UInt32]; var menuKeyEquivalent: String? { get }; static func keyName(_ code: UInt32) -> String   // [M4]
 }
+
 enum SystemShortcuts { static func conflicts(with s: Shortcut) -> Bool }   // CopySymbolicHotKeys
-@MainActor final class HotkeyCenter { func register(_ s: Shortcut?, handler: @escaping () -> Void); func suspend(); func resume() }
+@MainActor final class HotkeyCenter { func register(_ s: Shortcut?, handler: @escaping () -> Void); func suspend(); func resume()
+    init(); static let signature: OSType; private(set) var lastStatus: OSStatus; var isRegistered: Bool { get }; func invalidate(); func fire() }   // [M4] 'STKM'; register(nil) registers nothing
 enum Settings {                                                  // UserDefaults keys and typed accessors (spec 12)
     static func register(in defaults: UserDefaults)
 }
