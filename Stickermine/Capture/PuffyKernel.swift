@@ -113,7 +113,23 @@ enum PuffyKernel {
 
     /// The three height fields: the rim mask blurred at σ = R/3, 2R/3 and R.
     static func heightFields(rim: CIImage, domeRadius: Double) -> [CIImage] {
-        [domeRadius / 3, 2 * domeRadius / 3, domeRadius].map { rim.applyingGaussianBlur(sigma: $0) }
+        [domeRadius / 3, 2 * domeRadius / 3, domeRadius].map { heightField(rim: rim, sigma: $0) }
+    }
+
+    /// One height field: the rim mask blurred at `sigma`, as three box blurs.
+    /// Not CIGaussianBlur: it keeps its horizontal pass at half precision even
+    /// in an RGBAf context, so a large blur's height steps by 2^-11 along x,
+    /// and the normals' differences turn that into vertical streaks under the
+    /// specular. Three box blurs approximate the Gaussian (central limit) and
+    /// stay at full precision in both directions. CIBoxBlur's radius is the
+    /// box's width w (σ² ≈ w²/12 per pass), so three passes of w = 2σ give σ;
+    /// measured within about 1% of CIGaussianBlur on a 600 px disc.
+    static func heightField(rim: CIImage, sigma: Double) -> CIImage {
+        var image = rim
+        for _ in 0..<3 {
+            image = image.applyingFilter("CIBoxBlur", parameters: [kCIInputRadiusKey: 2 * sigma])
+        }
+        return image
     }
 
     /// Shades `base` (the cutout over its rim) with a dome of radius
@@ -156,7 +172,7 @@ enum PuffyKernel {
     /// the surface faces the halfway vector and is gone at u = 0 and u = 1,
     /// squared and screened on: less glossy than the kernel, never a flat wash.
     static func shadeWithBuiltInFilters(base: CIImage, rim: CIImage, domeRadius: Double, canvas: CGRect) -> CIImage? {
-        let height = rim.applyingGaussianBlur(sigma: 2 * domeRadius / 3)
+        let height = heightField(rim: rim, sigma: 2 * domeRadius / 3)
         let sobel = CIFilter.sobelGradients()
         sobel.inputImage = height
         guard let raw = sobel.outputImage else { return nil }
