@@ -91,7 +91,7 @@ struct PanelPolicyTests {
     @Test func theMouseFlagPatternCatchesEveryWayOfWritingIt() {
         let writes = ["panel.ignoresMouseEvents = true", "p.ignoresMouseEvents=false",
                       "panel.ignoresMouseEvents.toggle()", #"panel.setValue(true, forKey: "ignoresMouseEvents")"#]
-        let reads = ["if panel.ignoresMouseEvents == false {", "let x = panel.ignoresMouseEvents"]
+        let reads = ["if panel.ignoresMouseEvents == false", "let x = panel.ignoresMouseEvents"]
         for line in writes {
             #expect(line.range(of: Self.mouseFlagWrite, options: .regularExpression) != nil, "\(line)")
         }
@@ -132,5 +132,13 @@ struct PanelPolicyTests {
         panel.isFloatingPanel = false
         #expect(panel.mouseFlagWrites == 1)
         #expect(panel.floatingFlagWrites == 1)
+    }
+
+    @Test func aPanelForVisibleSharingStartsReadOnly() {
+        let panel = PanelPolicy.makeStickerPanel(contentRect: NSRect(x: 40_000, y: 0, width: 10, height: 10),
+                                                 hideFromSharing: false)
+        defer { panel.close() }
+        #expect(panel.sharingType == .readOnly)
+        #expect(panel.level == PanelPolicy.stickerLevel)
     }
 }

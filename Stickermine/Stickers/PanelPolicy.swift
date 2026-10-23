@@ -45,8 +45,13 @@ enum PanelPolicy {
         panel.isRestorable = false
     }
 
-    /// The only way a sticker window is created.
-    static func makeStickerPanel(contentRect: NSRect) -> StickerPanel {
+    /// The only way a sticker window is created. `hideFromSharing` is the
+    /// "Hide stickers from screen sharing and screenshots" setting (default on)
+    /// at creation time. A panel must start with the right value: on macOS 27.2
+    /// a window that was once set to `.none` keeps reporting `.none` after a
+    /// later `.readOnly`, so StickerManager recreates panels when the setting
+    /// is turned off.
+    static func makeStickerPanel(contentRect: NSRect, hideFromSharing: Bool = true) -> StickerPanel {
         let panel = StickerPanel(
             contentRect: contentRect,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -59,9 +64,7 @@ enum PanelPolicy {
         panel.hasShadow = false
         panel.canHide = false
         panel.animationBehavior = .none
-        // "Hide stickers from screen sharing and screenshots" defaults to on;
-        // StickerManager switches live panels to .readOnly when it is off.
-        panel.sharingType = .none
+        panel.sharingType = hideFromSharing ? .none : .readOnly
         panel.collectionBehavior = stickerBehavior
         panel.level = stickerLevel  // last
         return panel
