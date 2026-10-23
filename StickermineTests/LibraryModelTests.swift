@@ -120,7 +120,9 @@ struct LibraryModelTests {
         let pure: Set<String> = ["Library.swift", "LayoutResolver.swift", "DisplayRegistry.swift",
                                  "LibraryStore.swift", "LibraryController.swift", "StyleParameters.swift",
                                  "StyleRenderer.swift", "MasterImage.swift", "StickerGeometry.swift",
-                                 "StyleRecipes.swift", "PuffyKernel.swift", "SurfaceContents.swift"]
+                                 "StyleRecipes.swift", "PuffyKernel.swift", "SurfaceContents.swift",
+                                 "Shortcut.swift", "CaptureClassifier.swift", "MaskSampler.swift",
+                                 "HoleFiller.swift", "CutoutEngine.swift", "PickerModel.swift"]
         let files = SourceFiles.swiftFiles().filter { pure.contains($0.lastPathComponent) }
         #expect(!files.isEmpty)
         for url in files {
