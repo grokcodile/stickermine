@@ -96,27 +96,47 @@ struct Placement: Codable, Equatable, Identifiable {
     let id: UUID; var sticker: UUID; var style: StickerStyle
     var flipped: Bool; var onTop: Bool; var rotation: Double   // radians
     var poses: [String: Pose]                                  // key = DisplaySize.key
+    init(id: UUID = UUID(), sticker: UUID, style: StickerStyle, flipped: Bool = false, onTop: Bool = false,
+         rotation: Double = 0, poses: [String: Pose])                                              // [M2]
 }
 struct StickerRecord: Codable, Equatable, Identifiable {
     let id: UUID; var created: Date; var pixelWidth: Int; var pixelHeight: Int
     var pixelsPerPoint: Double; var lastStyle: StickerStyle; var tutorial: Bool
+    init(id: UUID, created: Date, pixelWidth: Int, pixelHeight: Int, pixelsPerPoint: Double,
+         lastStyle: StickerStyle, tutorial: Bool = false)                                          // [M2]
     var naturalPointSize: CGSize { get }                       // pixel size / pixelsPerPoint
 }
 struct DisplayRecord: Codable, Equatable {
     var name: String; var vendor: UInt32; var model: UInt32; var serial: UInt32; var builtin: Bool
     var lastSeen: Date; var placements: [Placement]            // back-to-front z-order
+    init(name: String, vendor: UInt32, model: UInt32, serial: UInt32, builtin: Bool, lastSeen: Date,
+         placements: [Placement])                                                                  // [M2]
 }
 struct Library: Codable, Equatable {
     static let currentVersion = 1
     var version: Int; var stickers: [StickerRecord]; var displays: [String: DisplayRecord]   // key = display UUID
+    init(version: Int = Library.currentVersion, stickers: [StickerRecord], displays: [String: DisplayRecord])   // [M2]
     static var empty: Library { get }
 }
+extension Library {                                            // [M2]
+    func sticker(_ id: UUID) -> StickerRecord?; func placement(_ id: UUID) -> Placement?
+    func displayKey(containing placement: UUID) -> String?; func placementCount(of sticker: UUID) -> Int
+    @discardableResult mutating func removePlacement(_ id: UUID) -> Placement?
+    mutating func removeSticker(_ id: UUID)                    // every placement on every display too
+    mutating func moveDisplayRecord(from oldKey: String, to newKey: String)   // fingerprint re-key
+}
+enum LibraryCoding { static func encoder() -> JSONEncoder; static func decoder() -> JSONDecoder }   // ISO-8601, sorted keys   [M2]
 
-struct DisplaySize: Hashable { let width: Int; let height: Int; var key: String { get }; init(width: Int, height: Int); init?(key: String); init(_ size: CGSize) }
+struct DisplaySize: Hashable { let width: Int; let height: Int; var key: String { get }; init(width: Int, height: Int); init?(key: String); init(_ size: CGSize)
+    var isLandscape: Bool { get }; var area: Double { get } }                                     // [M2] isLandscape, area
 enum LayoutResolver {
     static func pose(for placement: Placement, at size: DisplaySize) -> Pose?            // spec 11 rule incl. tie-break
     static func writing(_ pose: Pose, to placement: Placement, at size: DisplaySize) -> Placement
     static func placing(_ pose: Pose, to placement: Placement, at size: DisplaySize) -> Placement   // poses = [size: pose]
+    static let tieTolerance: Double                                                       // [M2] 1e-9
+    static func closestStoredSize(in poses: [String: Pose], to size: DisplaySize) -> DisplaySize?   // [M2]
+    static func distance(from source: DisplaySize, to target: DisplaySize) -> Double     // [M2]
+    static func isCloser(_ a: DisplaySize, than b: DisplaySize, to target: DisplaySize) -> Bool   // [M2]
 }
 
 struct DisplayInfo: Equatable {
@@ -124,11 +144,16 @@ struct DisplayInfo: Equatable {
     let backingScale: CGFloat; let name: String
     let vendor: UInt32; let model: UInt32; let serial: UInt32; let builtin: Bool
     let mirrorsDisplayID: UInt32?                               // nil when not a mirror secondary
+    let inMirrorSet: Bool                                       // [M2] CGDisplayIsInMirrorSet; part of the reconcile snapshot
+    init(uuid: String, displayID: UInt32, frame: CGRect, visibleFrame: CGRect, backingScale: CGFloat, name: String,
+         vendor: UInt32, model: UInt32, serial: UInt32, builtin: Bool, mirrorsDisplayID: UInt32?,
+         inMirrorSet: Bool = false)                                                                // [M2]
     var size: DisplaySize { get }
     var isGhost: Bool { get }                                   // vendor 0x756E6B6E && model 0x76697274
 }
 enum DisplayRegistry {
-    static func usable(_ all: [DisplayInfo]) -> [DisplayInfo]
+    static let ghostVendor: UInt32; static let ghostModel: UInt32; static let sharedSerial: UInt32   // [M2]
+    static func usable(_ all: [DisplayInfo]) -> [DisplayInfo]   // also drops duplicate UUIDs (first wins)
     static func fingerprintAdoption(for display: DisplayInfo, records: [String: DisplayRecord], connected: [DisplayInfo]) -> String?   // record key to show on `display`, or nil
     static func uuidString(for displayID: UInt32) -> String?   // nil for 0 / kCGNullDirectDisplay / unknown
 }
@@ -136,55 +161,73 @@ enum DisplayRegistry {
     func currentDisplays() -> [DisplayInfo]                    // already filtered by DisplayRegistry.usable
     var mainDisplay: DisplayInfo? { get }                       // NSScreen.screens[0]
 }
-@MainActor final class LiveScreenProvider: ScreenProvider { init() }
+@MainActor final class LiveScreenProvider: ScreenProvider { init(); static func info(for screen: NSScreen) -> DisplayInfo? }   // [M2] info(for:)
 
 final class LibraryStore {
-    enum LoadResult: Equatable { case fresh(Library), loaded(Library), readOnlyNewer(Library), recoveredFromCorrupt(Library) }
-    init(root: URL)
+    enum LoadResult: Equatable { case fresh(Library), loaded(Library), readOnlyNewer(Library), recoveredFromCorrupt(Library)
+        var library: Library { get } }                          // [M2] library
+    enum StoreError: Error, Equatable { case readOnly }         // [M2]
+    init(root: URL)                                             // takes no UserDefaults: the store reads no settings
+    let root: URL; var libraryURL: URL { get }; var stickersDirectory: URL { get }                 // [M2]
     static func defaultRoot() throws -> URL                     // ~/Library/Application Support/com.ethan.stickermine
-    static let tutorialIDs: [UUID]                              // 3 fixed UUIDs, order = tutorial 1, 2, 3 (Maple)
-    func load() -> LoadResult                                   // includes launch repair
+    static func root(inApplicationSupport support: URL) -> URL // [M2]
+    static let tutorialIDs: [UUID]                              // 5A1C0A00-7E57-4A11-8000-00000000000{1,2,3} = tutorial 1, 2, 3 (Maple)
+    static let defaultPixelsPerPoint: Double                    // [M2] 2.0 for an adopted PNG without DPI
+    func load() -> LoadResult                                   // includes launch repair; writes nothing but a corrupt file's rename
+    func repair(_ library: Library) -> Library                  // [M2]
+    static func corruptStamp(for date: Date) -> String          // [M2] "2026-10-15T21-02-33Z"
     func save(_ library: Library) throws                        // atomic; refuses (throws) when read-only
-    func pngURL(for sticker: UUID) -> URL
+    func pngURL(for sticker: UUID) -> URL                       // stickers/<UPPERCASE-UUID>.png
     func writePNG(_ data: Data, for sticker: UUID) throws       // atomic
-    func deletePNG(for sticker: UUID) throws
+    func deletePNG(for sticker: UUID) throws                    // a PNG that is already gone is not an error
     private(set) var isReadOnly: Bool
 }
 @MainActor final class LibraryController {
-    init(store: LibraryStore)
+    init(store: LibraryStore, saveDelay: TimeInterval = 0.5)    // [M2] saveDelay (tests)
+    let store: LibraryStore; let loadResult: LibraryStore.LoadResult                               // [M2]
     private(set) var library: Library
     var isReadOnly: Bool { get }
-    func mutate(_ change: (inout Library) -> Void)              // schedules a save 0.5 s later
+    func mutate(_ change: (inout Library) -> Void)              // schedules a save 0.5 s later; ignored while read-only
+    func refreshMetadata(_ change: (inout Library) -> Void)     // [M2] lastSeen/name: written with the next save, never schedules one
     func flush()                                                // synchronous save now
     var onChange: (() -> Void)?
+    private(set) var hasPendingSave: Bool; private(set) var hasUnsavedChanges: Bool                // [M2]
 }
 ```
 
 ### Rendering (M3)
 
 ```swift
-struct StyleParameters: Equatable {
+struct StyleParameters: Equatable {                             // created in M2
     let rimRadius: Double; let closing: Double; let shadowRadius: Double; let shadowOffset: Double
     let shadowOpacity: Double; let chokeSigma: Double
+    static let referenceLongSide: Double; static let rimRadiusPerReference: Double; static let closingPerReference: Double
+    static let shadowRadiusPerReference: Double; static let shadowOffsetPerRadius: Double
+    static let shadowOpacityValue: Double; static let chokeSigmaPer512: Double                     // [M2] 800, 12, 10, 10, 0.6, 0.35, 0.5
     static func forStickerPixels(longSide: Double, sourceLongSide: Double) -> StyleParameters   // values per 800 px from spec 8
     func shadowMargin(for style: StickerStyle) -> Double        // 0 for .none, else ceil(3 × shadowRadius) + |shadowOffset|
 }
-struct RenderRequest: Equatable {
+struct RenderRequest: Equatable {                               // created in M2
     let sticker: UUID; let style: StickerStyle; let flipped: Bool; let rotation: Double
     let pointSize: CGSize                                       // unrotated on-screen size in points
     let backingScale: CGFloat
 }
-struct RenderedSticker {
-    let contents: Any                                           // IOSurface or CGImage, set as CALayer.contents
+struct RenderedSticker {                                        // created in M2
+    let contents: Any                                           // IOSurface or CGImage (CGImage in the M2 baseline)
     let pixelSize: CGSize; let pointBounds: CGSize               // rotated bounding box of the sticker (no margin)
     let alphaMask: AlphaMask                                     // for the fallback click-through mode and hit tests
 }
-struct AlphaMask { let width: Int; let height: Int; let bytes: [UInt8]; func isOpaque(atUnit p: CGPoint) -> Bool }   // p in 0–1, top-left origin
-final class StyleRenderer {
-    init(masterProvider: @escaping (UUID) -> CGImage?)
+struct AlphaMask { let width: Int; let height: Int; let bytes: [UInt8]; func isOpaque(atUnit p: CGPoint) -> Bool }   // p in 0–1, top-left origin; long side ≤ 512
+final class StyleRenderer {                                     // M2 baseline: every style draws the plain master
+    init(masterProvider: @escaping (UUID) -> CGImage?)         // called off the main thread
     static let maxPixelLongSide: Double = 2048
     func render(_ request: RenderRequest) async throws -> RenderedSticker
-    func prewarm()                                              // compiles the Puffy kernel off-main
+    func prewarm()                                              // compiles the Puffy kernel off-main (M3)
+    enum RenderError: Error, Equatable { case missingMaster, emptySize, contextFailed }           // [M2]
+    static let maxMaskLongSide: Int; static let alphaFloor: UInt8                                  // [M2] 512, 5
+    static func canvas(for request: RenderRequest) -> (width: Int, height: Int, drawSize: CGSize, pointBounds: CGSize)   // [M2]
+    static func renderBaseline(master: CGImage, request: RenderRequest) throws -> RenderedSticker   // [M2]
+    static func clampAlphaAndBuildMask(pixels: UnsafeMutablePointer<UInt8>, width: Int, height: Int) -> AlphaMask   // [M2]
 }
 ```
 
@@ -196,7 +239,7 @@ final class StyleRenderer {
     static let floatingLevel: NSWindow.Level                    // .floating (Float on top)            [M1]
     static let stickerBehavior: NSWindow.CollectionBehavior
     static func level(onTop: Bool) -> NSWindow.Level            // floatingLevel or stickerLevel       [M1]
-    static func makeStickerPanel(contentRect: NSRect) -> StickerPanel
+    static func makeStickerPanel(contentRect: NSRect, hideFromSharing: Bool = true) -> StickerPanel   // [M2] once .none, the getter stays .none on 27.2
     static func applyCommon(to panel: NSPanel, hidesOnDeactivate: Bool)   // isReleasedWhenClosed=false etc.
 }
 @MainActor final class StickerPanel: NSPanel {                  // canBecomeKey == isEditing
@@ -229,18 +272,53 @@ extension AppDelegate {                                         // test-host gua
     private(set) static var didRunStartup: Bool                 // set right after the guard; AppDelegateTests expects false
 }
 @MainActor final class StickerManager {
-    init(library: LibraryController, screens: ScreenProvider, renderer: StyleRenderer)
+    init(library: LibraryController, screens: ScreenProvider, renderer: StyleRenderer,
+         reconcileDelay: TimeInterval = 0.45)                   // [M2] reconcileDelay (tests)
     func restoreAll()
     func scheduleReconcile()                                    // 450 ms debounce
     func reconcileNow()
-    func place(sticker: UUID, style: StickerStyle, centerOnScreen: NSPoint, pointSize: CGSize)   // a user placement
+    @discardableResult
+    func place(sticker: UUID, style: StickerStyle, centerOnScreen: NSPoint, pointSize: CGSize) -> UUID?   // a user placement; [M2] returns its ID
     func remove(placement: UUID)
     func deleteSticker(_ sticker: UUID)
     func panel(for placement: UUID) -> StickerPanel?
-    func setSharingHidden(_ hidden: Bool)
+    func setSharingHidden(_ hidden: Bool)                       // turning hiding off recreates the panels that stay hidden
     var editingPlacement: UUID? { get }
     func endEditing(discardGesture: Bool)
+    static let rebuildsPanelsAfterSystemEvents: Bool            // [M2] from the spike results
+    static let systemEventRecheckDelay: TimeInterval            // [M2] 1.5
+    struct DisplaySnapshot: Equatable { let frame: CGRect; let backingScale: CGFloat; let inMirrorSet: Bool }   // [M2]
+    var placementsWithPanels: Set<UUID> { get }; var reconcileCount: Int { get }; var renderRequestsIssued: Int { get }   // [M2]
+    func refreshPanel(for placement: UUID)                      // [M2] re-resolve one placement after a model write
+    func closeAllPanels(); func rebuildAllPanels()              // [M2]
+    func commitRender(_ rendered: RenderedSticker, for request: RenderRequest, placement id: UUID)   // [M2]
+    func recordKeyForUserEdit(on display: DisplayInfo) -> String   // [M2] creates the record or saves a fingerprint re-key
+    func enableClickThroughFallback(); var isClickThroughFallbackEnabled: Bool { get }             // [M2]
+    func startObservingDisplayChanges(); func systemEvent(recheckLater: Bool)                      // [M2]
+    nonisolated static func ordersOutImmediately(for flags: CGDisplayChangeSummaryFlags) -> Bool   // [M2]
+    nonisolated static func displayReconfigured(_ displayID: CGDirectDisplayID, flags: CGDisplayChangeSummaryFlags)   // [M2]
+    func handleDisplayRemoved(displayID: UInt32)                // [M2]
+    static func recordAssignments(displays: [DisplayInfo], records: [String: DisplayRecord]) -> [String: String]   // [M2]
+    static func display(containing point: NSPoint, in displays: [DisplayInfo]) -> DisplayInfo?   // [M2]
 }
+enum StickerGeometry {                                          // [M2] pure pose ↔ screen geometry
+    static let reachableInset: CGFloat                          // 8
+    struct Layout: Equatable { let pose: Pose; let isBorrowed: Bool; let pointSize: CGSize; let stickerRect: CGRect }
+    static func boundingSize(of size: CGSize, rotation: Double) -> CGSize
+    static func center(of pose: Pose, in frame: CGRect) -> CGPoint
+    static func pose(center: CGPoint, scale: Double, in frame: CGRect) -> Pose
+    static func reachableCenter(_ center: CGPoint, visibleFrame: CGRect) -> CGPoint
+    static func clampedRect(size: CGSize, center: CGPoint, within frame: CGRect) -> CGRect
+    static func layout(for placement: Placement, natural: CGSize, on display: DisplayInfo) -> Layout?
+}
+@MainActor final class ClickThroughFallback {                   // [M2] the only writer of ignoresMouseEvents
+    struct Target { let panel: NSPanel; let contentRect: CGRect; let mask: AlphaMask?; let wholeFrame: Bool }
+    struct Candidate { let contentRect: CGRect; let frame: CGRect; let mask: AlphaMask?; let wholeFrame: Bool }
+    init(targets: @escaping () -> [Target]); func prepare(_ panel: NSPanel); func forget(_ panel: NSPanel)
+    func start(); func stop(); func update(at point: NSPoint); private(set) weak var activePanel: NSPanel?
+    nonisolated static func hitIndex(at p: CGPoint, in candidates: [Candidate]) -> Int?
+}
+extension AppDelegate { static let clickThroughFallbackByDefault: Bool }   // [M2] from the spike results
 ```
 
 ### Capture, picker, session (M4)
@@ -257,7 +335,12 @@ enum CaptureClassifier { static func classify(fileExists: Bool, fileSize: Int, e
 struct LoadedCapture { let image: CGImage; let pixelsPerPoint: Double }
 enum MasterImage {
     static func load(url: URL) throws -> LoadedCapture
-    static func pngData(_ image: CGImage, pixelsPerPoint: Double) throws -> Data   // writes DPI = 72 × ppp
+    static func pngData(_ image: CGImage, pixelsPerPoint: Double) throws -> Data   // writes DPI = 72 × ppp   [created in M2]
+    enum Failure: Error { case cannotEncode }                                      // [M2]
+    struct FileInfo: Equatable { let pixelWidth: Int; let pixelHeight: Int; let pixelsPerPoint: Double? }   // [M2]
+    static func fileInfo(at url: URL) -> FileInfo?                                 // [M2] size and DPI without decoding
+    static func pixelsPerPoint(fromDPI dpi: Double) -> Double?                     // [M2] DPI / 72, rounded to 0.01
+    static func image(at url: URL) -> CGImage?                                     // [M2] thread-safe
 }
 enum MaskSampler { static func subject(atUnitTopLeft p: CGPoint, masks: [(index: Int, mask: CVPixelBuffer)]) -> Int? }
 enum HoleFiller { static func fill(alpha: inout [Float], width: Int, height: Int, edge: Int) }
