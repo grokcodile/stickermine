@@ -53,4 +53,21 @@ struct SurfaceContentsTests {
         // White stays white: B, G, R and A all near 255.
         #expect((0..<4).allSatisfy { bytes[$0] > 250 })
     }
+
+    @Test func aBlankSurfaceIsBGRAWithRowsAtLeastFourBytesAPixel() throws {
+        let surface = try #require(SurfaceContents.blank(width: 13, height: 5))
+        #expect(surface.width == 13 && surface.height == 5)
+        #expect(surface.pixelFormat == kCVPixelFormatType_32BGRA)
+        #expect(surface.bytesPerElement == 4)
+        #expect(surface.bytesPerRow >= 13 * 4)
+        #expect(SurfaceContents.blank(width: 0, height: 5) == nil)
+    }
+
+    @Test func taggingRecordsTheColourSpace() throws {
+        let surface = try #require(SurfaceContents.blank(width: 2, height: 2))
+        let p3 = try #require(CGColorSpace(name: CGColorSpace.displayP3))
+        SurfaceContents.tag(surface, with: p3)
+        let tag = try #require(IOSurfaceCopyValue(surface, kIOSurfaceColorSpace))
+        #expect(CGColorSpace(propertyListPlist: tag)?.name == CGColorSpace.displayP3)
+    }
 }
