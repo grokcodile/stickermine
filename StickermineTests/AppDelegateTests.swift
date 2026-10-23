@@ -24,4 +24,13 @@ struct AppDelegateTests {
         #expect(delegate.contains("DebugMaple.launchArgument"))
         #expect(DebugMaple.launchArgument == "-debugPlaceMaple")
     }
+
+    @Test func theStyleGalleryRunsInsteadOfTheStickers() throws {
+        let delegate = try SourceFiles.contents(of: "App/AppDelegate.swift")
+        let gallery = try #require(delegate.range(of: "StyleGallery.launchArgument"))
+        let stickers = try #require(delegate.range(of: "startStickers()\n"))
+        #expect(gallery.lowerBound < stickers.lowerBound)
+        #expect(delegate.contains("StyleGallery.runAndQuit()"))
+        #expect(delegate.contains("DebugMaple.styles(in: arguments)"))
+    }
 }

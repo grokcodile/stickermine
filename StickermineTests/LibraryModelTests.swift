@@ -119,7 +119,8 @@ struct LibraryModelTests {
         // soon as they exist.
         let pure: Set<String> = ["Library.swift", "LayoutResolver.swift", "DisplayRegistry.swift",
                                  "LibraryStore.swift", "LibraryController.swift", "StyleParameters.swift",
-                                 "StyleRenderer.swift", "MasterImage.swift", "StickerGeometry.swift"]
+                                 "StyleRenderer.swift", "MasterImage.swift", "StickerGeometry.swift",
+                                 "StyleRecipes.swift", "PuffyKernel.swift", "SurfaceContents.swift"]
         let files = SourceFiles.swiftFiles().filter { pure.contains($0.lastPathComponent) }
         #expect(!files.isEmpty)
         for url in files {

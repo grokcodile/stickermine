@@ -30,6 +30,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // LSUIElement already makes this an agent app; saying so in code keeps it
         // true even for a launch whose Info.plist was not the one we built.
         NSApp.setActivationPolicy(.accessory)
+        if ProcessInfo.processInfo.arguments.contains(StyleGallery.launchArgument) {
+            // Debug: render the style gallery and quit, without touching the library.
+            StyleGallery.runAndQuit()
+            return
+        }
         startStickers()
     }
 
@@ -71,8 +76,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.stickers = stickers
         log.notice("library \(Self.describe(library.loadResult), privacy: .public): \(library.library.stickers.count) stickers")
 
-        if ProcessInfo.processInfo.arguments.contains(DebugMaple.launchArgument) {
-            DebugMaple.place(library: library, stickers: stickers, screens: screens)
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains(DebugMaple.launchArgument) {
+            DebugMaple.place(library: library, stickers: stickers, screens: screens,
+                             styles: DebugMaple.styles(in: arguments))
         }
     }
 
