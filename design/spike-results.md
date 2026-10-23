@@ -103,6 +103,6 @@ Fill this in from the rows above once the run is complete.
 | Do pinch and rotate reach the editing sticker? | 9–11 | Not tested (spike skipped). M5 implements pinch and rotate as planned, with the corner knob as the guaranteed path. |
 | Does `performDrag(with:)` return at the drag's end? | 4 | Not tested (spike skipped). M5 keeps its planned default (performDrag returning = drag end). |
 | Does clicking another sticker end editing? | 8 | Not tested (spike skipped). M5 keeps its planned default. |
-| Do panels go stale, and does a rebuild fix it? | 34, 35, 38, 39 | Not tested (spike skipped). Default kept: no rebuild after system events (`rebuildsPanelsAfterSystemEvents = false`, M2) (row 38 pending). |
+| Do panels go stale, and does a rebuild fix it? | 34, 35, 38, 39 | Not tested (spike skipped). Default kept: no rebuild after system events (`rebuildsPanelsAfterSystemEvents = false`, M2); rows 34, 35, 38 and 39 not run. |
 | Stage Manager supported as is? | 28, 29 | Not tested (spike skipped). No change to the collection behaviour. |
-| Any difference between the local and the CI (26.x SDK) build? | 40, 41 | |
+| Any difference between the local and the CI (26.x SDK) build? | 40, 41 | Not tested hands-on (spike skipped). The CI dry-run app (run 39965873473) builds and links `minos 26.0`, `sdk 26.5`; behaviour differences are unchecked until rows 40–41 run. |

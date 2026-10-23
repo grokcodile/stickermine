@@ -5,3 +5,4 @@
 | Date | Point | Commit | Run | Conclusion | Notes |
 |---|---|---|---|---|---|
 | 2026-10-23 | M1 scaffold (Task 5) | cbbf116 | https://github.com/grokcodile/stickermine/actions/runs/39964973942 | success | Ran on branch v1 (release.yml added to main alone so it can be dispatched); ad-hoc, no secrets yet |
+| 2026-10-23 | M1 end (Task 12) | ab10bb9 | https://github.com/grokcodile/stickermine/actions/runs/39965873473 | success | branch v1; CI app minos 26.0, sdk 26.5 |
