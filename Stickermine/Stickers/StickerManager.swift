@@ -219,12 +219,30 @@ final class StickerManager {
     }
 
     /// Shows a finished render if it is still the newest one asked for and its
-    /// placement still exists.
+    /// placement still exists, with the layer shadow for the sticker's
+    /// on-screen size; the frame then grows by the shadow margin around the
+    /// same centre (spec section 9).
     func commitRender(_ rendered: RenderedSticker, for request: RenderRequest, placement id: UUID) {
-        guard let entry = entries[id], entry.request == request, library.library.placement(id) != nil else { return }
-        entry.view.show(rendered, shadow: nil, style: request.style)
+        let model = library.library
+        guard let entry = entries[id], entry.request == request, model.placement(id) != nil else { return }
+        let sourceLongSide = model.sticker(request.sticker).map { Double(max($0.pixelWidth, $0.pixelHeight)) } ?? 0
+        entry.view.show(rendered, shadow: request.onScreenParameters(sourceLongSide: sourceLongSide),
+                        style: request.style)
         entry.alphaMask = rendered.alphaMask
         if let layout = entry.layout { applyFrame(entry, layout: layout) }
+    }
+
+    /// A panel's backing scale changed (`windowDidChangeBackingProperties`):
+    /// re-render its bitmap at the new scale. The frame stays; a request equal
+    /// to the newest one issues nothing.
+    func backingScaleChanged(for id: UUID, to scale: CGFloat) {
+        // The placement being edited is re-rendered when its gesture or drag ends
+        // (refreshPanel); a render committed mid-drag would move the window back.
+        guard scale > 0, editingPlacement != id, let entry = entries[id], let layout = entry.layout,
+              let placement = library.library.placement(id), entry.request?.backingScale != scale
+        else { return }
+        log.notice("backing scale of \(Self.short(id), privacy: .public) is now \(Double(scale)); re-rendering")
+        requestRender(entry, placement: placement, layout: layout, backingScale: scale)
     }
 
     // MARK: User actions
@@ -319,8 +337,8 @@ final class StickerManager {
     /// Hiding is set on each panel. A panel that keeps reporting `.none` after
     /// `.readOnly` (macOS 27.2, on a window once set to `.none`) is replaced by
     /// a new panel created with the new setting, which takes over the old one's
-    /// bitmap, layout and render request, so the sticker never shows empty while
-    /// a render runs.
+    /// bitmap, shadow, frame margin, layout and render request, so the sticker
+    /// never shows empty while a render runs and keeps its frame.
     func setSharingHidden(_ hidden: Bool) {
         sharingHidden = hidden
         let wanted: NSWindow.SharingType = hidden ? .none : .readOnly
@@ -340,6 +358,7 @@ final class StickerManager {
             let contents = old.view.contentLayer.contents
             let pointSize = old.view.contentPointSize
             let shadow = old.view.layerShadow
+            let margin = old.view.frameMargin
             let frame = old.panel.frame
             tearDown(id)
             let fresh = makeEntry(for: placement)
@@ -347,7 +366,9 @@ final class StickerManager {
             fresh.layout = old.layout
             fresh.request = old.request
             fresh.alphaMask = old.alphaMask
-            if let contents { fresh.view.showContents(contents, pointSize: pointSize, shadow: shadow) }
+            if let contents {
+                fresh.view.showContents(contents, pointSize: pointSize, shadow: shadow, frameMargin: margin)
+            }
             fresh.panel.setFrame(frame, display: false)
         }
         log.notice("recreated \(stuck.count) panels to change their sharing type")
@@ -498,14 +519,27 @@ final class StickerManager {
         panel.placementID = placement.id
         fallback?.prepare(panel)
         panel.level = PanelPolicy.level(onTop: placement.onTop)  // last
+        let id = placement.id
+        // Only a panel on a real screen has a meaningful backing scale.
+        view.onBackingScaleChange = { [weak self, weak panel] scale in
+            guard panel?.screen != nil else { return }
+            self?.backingScaleChanged(for: id, to: scale)
+        }
         let entry = Entry(panel: panel, view: view)
         entries[placement.id] = entry
         return entry
     }
 
+    /// The window: the shown bitmap's box (an Outline or Puffy rim included;
+    /// the sticker rect before the first render) centred on the sticker rect,
+    /// plus the shadow margin on every side, backing-aligned (spec section 9).
     private func applyFrame(_ entry: Entry, layout: StickerGeometry.Layout) {
-        let margin = entry.view.layerShadow?.margin ?? 0
-        let rect = layout.stickerRect.insetBy(dx: -margin, dy: -margin)
+        let margin = entry.view.frameMargin
+        let content = entry.view.contentPointSize
+        let size = content.width > 0 && content.height > 0 ? content : layout.stickerRect.size
+        let box = CGRect(x: layout.stickerRect.midX - size.width / 2, y: layout.stickerRect.midY - size.height / 2,
+                         width: size.width, height: size.height)
+        let rect = box.insetBy(dx: -margin, dy: -margin)
         let target = entry.panel.backingAlignedRect(rect, options: .alignAllEdgesNearest)
         if entry.panel.frame != target {
             entry.panel.setFrame(target, display: false)

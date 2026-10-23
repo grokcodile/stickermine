@@ -380,14 +380,17 @@ struct StickerManagerTests {
         h.manager.commitRender(rendered, for: request, placement: here.id)
         let renders = h.manager.renderRequestsIssued
         let old = try #require(h.manager.panel(for: here.id))
+        let frame = old.frame
         h.manager.setSharingHidden(false)
         // On macOS 27.2 the old panel keeps reporting .none, so it is replaced.
         let new = try #require(h.manager.panel(for: here.id))
         #expect(new !== old)
         let view = try #require(new.contentView as? StickerView)
         #expect(view.contentLayer.contents != nil)
-        // Outline's bitmap is the sticker plus its rim on every side.
+        // The bitmap's box (Outline's rim included), its shadow margin and the frame carry over.
         #expect(view.contentPointSize == rendered.pointBounds)
+        #expect(view.frameMargin == 9)
+        #expect(new.frame == frame)
         #expect(h.manager.renderRequestsIssued == renders)
     }
 
@@ -502,6 +505,65 @@ struct StickerManagerTests {
                                 centerOnScreen: NSPoint(x: CGFloat.nan, y: 270),
                                 pointSize: CGSize(width: 100, height: 50)) == nil)
         #expect(h.library.library.displays[Fixtures.externalUUID] == nil)
+        #expect(!h.library.hasPendingSave)
+    }
+
+    @Test func aCommittedRenderAddsTheShadowMarginAroundTheSameCentre() async throws {
+        let here = placement(sticker)
+        let request = RenderRequest(sticker: sticker, style: .outline, flipped: false, rotation: 0,
+                                    pointSize: CGSize(width: 200, height: 100), backingScale: 2)
+        let rendered = try await StyleRenderer(masterProvider: { _ in Fixtures.image(width: 400, height: 200) })
+            .render(request)
+        // From here on nothing suspends, so no other test sees these panels.
+        let h = try Harness(model([here]), displays: [Fixtures.external()])
+        defer { h.finish() }
+        h.manager.restoreAll()
+        let panel = try #require(h.manager.panel(for: here.id))
+        #expect(panel.frame == CGRect(x: 40_860, y: 490, width: 200, height: 100))
+        h.manager.commitRender(rendered, for: request, placement: here.id)
+        // 400 px on screen: the rim reaches ceil(6) + 1 = 7 px = 3.5 pt beyond
+        // the sticker, and the shadow margin is ceil(15) + 3 = 18 px = 9 pt.
+        #expect(rendered.pointBounds == CGSize(width: 207, height: 107))
+        // 207 + 2 × 9 by 107 + 2 × 9 around the same centre, give or take backing alignment.
+        #expect(abs(panel.frame.width - 225) <= 1 && abs(panel.frame.height - 125) <= 1)
+        #expect(abs(panel.frame.midX - 40_960) <= 0.5 && abs(panel.frame.midY - 540) <= 0.5)
+        let view = try #require(panel.contentView as? StickerView)
+        #expect(view.layerShadow == LayerShadow(radius: 2.5, opacity: 0.35, offset: 1.5))
+        #expect(view.frameMargin == 9)
+        #expect(!h.library.hasPendingSave)
+    }
+
+    @Test func aNoneStickerKeepsItsFrameWithoutAShadow() async throws {
+        let here = Placement(sticker: sticker, style: .none, poses: ["1920x1080": Pose(x: 0.5, y: 0.5, scale: 1)])
+        let request = RenderRequest(sticker: sticker, style: .none, flipped: false, rotation: 0,
+                                    pointSize: CGSize(width: 200, height: 100), backingScale: 2)
+        let rendered = try await StyleRenderer(masterProvider: { _ in Fixtures.image(width: 400, height: 200) })
+            .render(request)
+        let h = try Harness(model([here]), displays: [Fixtures.external()])
+        defer { h.finish() }
+        h.manager.restoreAll()
+        h.manager.commitRender(rendered, for: request, placement: here.id)
+        let panel = try #require(h.manager.panel(for: here.id))
+        #expect(panel.frame == CGRect(x: 40_860, y: 490, width: 200, height: 100))
+        #expect((panel.contentView as? StickerView)?.layerShadow == nil)
+    }
+
+    @Test func aBackingScaleChangeOnTheWindowReRendersOnce() throws {
+        let here = placement(sticker)
+        let h = try Harness(model([here]), displays: [Fixtures.external(scale: 2)])
+        defer { h.finish() }
+        h.manager.restoreAll()
+        let frame = try #require(h.manager.panel(for: here.id)?.frame)
+        let renders = h.manager.renderRequestsIssued
+        h.manager.backingScaleChanged(for: here.id, to: 2)        // the scale it already has
+        #expect(h.manager.renderRequestsIssued == renders)
+        h.manager.backingScaleChanged(for: here.id, to: 1)
+        #expect(h.manager.renderRequestsIssued == renders + 1)
+        h.manager.backingScaleChanged(for: here.id, to: 1)
+        #expect(h.manager.renderRequestsIssued == renders + 1)
+        h.manager.backingScaleChanged(for: UUID(), to: 3)         // unknown placement: nothing
+        #expect(h.manager.renderRequestsIssued == renders + 1)
+        #expect(h.manager.panel(for: here.id)?.frame == frame)
         #expect(!h.library.hasPendingSave)
     }
 }
