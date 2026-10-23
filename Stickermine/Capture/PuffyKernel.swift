@@ -116,28 +116,49 @@ enum PuffyKernel {
         [domeRadius / 3, 2 * domeRadius / 3, domeRadius].map { heightField(rim: rim, sigma: $0) }
     }
 
-    /// One height field: the rim mask blurred at `sigma`, as three box blurs.
+    /// One height field: the rim mask blurred at `sigma`.
+    ///
     /// Not CIGaussianBlur: it keeps its horizontal pass at half precision even
     /// in an RGBAf context, so a large blur's height steps by 2^-11 along x,
     /// and the normals' differences turn that into vertical streaks under the
-    /// specular. Three box blurs approximate the Gaussian (central limit) and
-    /// stay at full precision in both directions. CIBoxBlur's radius is the
-    /// box's width w (σ² ≈ w²/12 per pass), so three passes of w = 2σ give σ;
-    /// measured within about 1% of CIGaussianBlur on a 600 px disc.
+    /// specular. Three CIBoxBlur passes approximate the Gaussian (central
+    /// limit) and stay at full precision in both directions. CIBoxBlur's radius
+    /// r gives an odd box about r − 1 px wide, so r = 2σ + 1 gives σ per three
+    /// passes.
+    ///
+    /// A dome is low-frequency, so a big blur runs at reduced resolution: the
+    /// rim is scaled down so σ becomes `reducedSigma` px, blurred, scaled back
+    /// up with a plain affine transform (sampled at full precision by the next
+    /// filter, unlike CILanczos/CIBicubicScaleTransform, whose output is half
+    /// precision), and a small full-resolution box pass smooths the linear
+    /// interpolation's kinks. At the 2048 px cap that is a few ms instead of
+    /// ~0.6 s and gigabytes, within about 1% of the full-resolution blur.
     static func heightField(rim: CIImage, sigma: Double) -> CIImage {
-        var image = rim
+        let factor = min(1, reducedSigma / sigma)
+        guard factor < 1 else { return boxBlurred(rim, sigma: sigma) }
+        let small = boxBlurred(rim.transformed(by: CGAffineTransform(scaleX: factor, y: factor)), sigma: sigma * factor)
+        let upscaled = small.transformed(by: CGAffineTransform(scaleX: 1 / factor, y: 1 / factor))
+        return boxBlurred(upscaled, sigma: 0.6 / factor)
+    }
+
+    /// The σ, in reduced pixels, that a large height blur runs at.
+    static let reducedSigma = 24.0
+
+    /// Three box passes of width ≈ 2σ: a Gaussian of `sigma`, at full precision.
+    static func boxBlurred(_ image: CIImage, sigma: Double) -> CIImage {
+        var result = image
         for _ in 0..<3 {
-            image = image.applyingFilter("CIBoxBlur", parameters: [kCIInputRadiusKey: 2 * sigma])
+            result = result.applyingFilter("CIBoxBlur", parameters: [kCIInputRadiusKey: 2 * sigma + 1])
         }
-        return image
+        return result
     }
 
     /// Shades `base` (the cutout over its rim) with a dome of radius
     /// `domeRadius` px built from `rim`, trying the kernel first (when
     /// `useKernel` and it compiled), then the built-in filters, then nothing.
     static func shade(base: CIImage, rim: CIImage, domeRadius: Double, canvas: CGRect,
-                      useKernel: Bool) -> (image: CIImage, path: Path) {
-        if useKernel, let kernel = compiled.kernel,
+                      useKernel: Bool, kernel: CIKernel? = compiled.kernel) -> (image: CIImage, path: Path) {
+        if useKernel, let kernel,
            let image = shadeWithKernel(kernel, base: base, rim: rim, domeRadius: domeRadius, canvas: canvas) {
             return (image, .kernel)
         }

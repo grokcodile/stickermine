@@ -103,4 +103,31 @@ struct PuffyKernelTests {
         #expect(!text.contains("applyingGaussianBlur(sigma: 2 * domeRadius / 3)"),
                 "the built-in Puffy must use heightField(rim:sigma:), not CIGaussianBlur")
     }
+
+    @Test func aCapSizeDomeBuildsQuickly() {
+        // At the 2048 px cap the dome radius reaches ~512 px. Full-resolution box
+        // blurs took ~0.6 s and gigabytes there; the height must stay cheap.
+        let side = 2048
+        let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        context.fillEllipse(in: CGRect(x: 10, y: 10, width: side - 20, height: side - 20))
+        let rim = CIImage(cgImage: context.makeImage()!)
+        let ci = CIContext(options: [.workingFormat: CIFormat.RGBAf.rawValue, .workingColorSpace: NSNull()])
+        var pixels = [Float](repeating: 0, count: side * side * 4)
+        func renderAll() {
+            for field in PuffyKernel.heightFields(rim: rim, domeRadius: 512) {
+                pixels.withUnsafeMutableBytes {
+                    ci.render(field, toBitmap: $0.baseAddress!, rowBytes: side * 16,
+                              bounds: CGRect(x: 0, y: 0, width: side, height: side), format: .RGBAf, colorSpace: nil)
+                }
+            }
+        }
+        renderAll()  // warm up the shaders
+        let start = Date()
+        renderAll()
+        let seconds = Date().timeIntervalSince(start)
+        #expect(seconds < 0.15, "three cap-size height fields took \(Int(seconds * 1000)) ms")
+    }
 }

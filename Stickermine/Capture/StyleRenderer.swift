@@ -172,6 +172,20 @@ final class StyleRenderer: @unchecked Sendable {
         return measurements
     }
 
+    /// Where Puffy's kernel comes from; tests substitute a kernel that draws nothing.
+    var puffyKernelProvider: () -> CIKernel? = { PuffyKernel.compiled.kernel }
+
+    /// True once the kernel drew nothing for a sticker that has pixels: every
+    /// later Puffy uses the built-in filters for the rest of the session.
+    var isPuffyKernelDisabled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return kernelDisabled
+    }
+    private var kernelDisabled = false
+    /// The path of the bitmap this thread just drew (guarded by `lock`).
+    private var lastDrawnPath: PuffyKernel.Path?
+
     /// Which Puffy recipe drew the latest Puffy bitmap.
     var lastPuffyPath: PuffyKernel.Path? {
         lock.lock()
@@ -199,14 +213,41 @@ final class StyleRenderer: @unchecked Sendable {
         guard let colorSpace = SurfaceContents.colorSpace(for: master) else { throw RenderError.contextFailed }
         let (image, context) = styled(master: master, request: request, drawSize: canvas.drawSize, bounds: bounds)
         defer { context.clearCaches() }
+        let rendered: RenderedSticker
         if options.contents == .surface,
            let surface = renderSurface(image, context: context, bounds: bounds, colorSpace: colorSpace) {
-            return RenderedSticker(contents: surface.surface, pixelSize: bounds.size, pointBounds: canvas.pointBounds,
-                                   alphaMask: surface.mask, backingScale: request.backingScale)
+            rendered = RenderedSticker(contents: surface.surface, pixelSize: bounds.size, pointBounds: canvas.pointBounds,
+                                       alphaMask: surface.mask, backingScale: request.backingScale)
+        } else {
+            let bitmap = try renderImage(image, context: context, bounds: bounds, colorSpace: colorSpace)
+            rendered = RenderedSticker(contents: bitmap.image, pixelSize: bounds.size, pointBounds: canvas.pointBounds,
+                                       alphaMask: bitmap.mask, backingScale: request.backingScale)
         }
-        let bitmap = try renderImage(image, context: context, bounds: bounds, colorSpace: colorSpace)
-        return RenderedSticker(contents: bitmap.image, pixelSize: bounds.size, pointBounds: canvas.pointBounds,
-                               alphaMask: bitmap.mask, backingScale: request.backingScale)
+        return try guardAgainstABlankKernel(rendered, request: request)
+    }
+
+    /// A Puffy drawn by the kernel with no opaque pixel at all means either an
+    /// empty master or a kernel that compiles but draws nothing (a stitched
+    /// kernel failing at render time on some Mac would leave an invisible,
+    /// unclickable sticker). Re-render once with the built-in filters: if that
+    /// has pixels, the kernel is broken, so it stays off for the session.
+    private func guardAgainstABlankKernel(_ rendered: RenderedSticker, request: RenderRequest) throws -> RenderedSticker {
+        lock.lock()
+        let drewWithKernel = request.style == .puffy && lastDrawnPath == .kernel && !kernelDisabled
+        lock.unlock()
+        guard drewWithKernel, !rendered.alphaMask.bytes.contains(where: { $0 > 0 }) else { return rendered }
+        lock.lock()
+        kernelDisabled = true
+        lock.unlock()
+        let fallback = try renderNow(request)
+        if fallback.alphaMask.bytes.contains(where: { $0 > 0 }) {
+            log.error("Puffy kernel drew nothing; using the built-in filters for the rest of the session")
+            return fallback
+        }
+        lock.lock()
+        kernelDisabled = false
+        lock.unlock()
+        return rendered
     }
 
     /// The canvas for a request: the rotated bounding box in pixels of the
@@ -269,10 +310,15 @@ final class StyleRenderer: @unchecked Sendable {
             let inscribedRadius = inscribedRadius(for: request.sticker, master: master) * pixelRatio
                 + parameters.rimRadius
             let domeRadius = StyleParameters.domeRadius(inscribedRadius: inscribedRadius, longSide: longSide)
+            lock.lock()
+            let kernelOff = kernelDisabled
+            lock.unlock()
             let shaded = PuffyKernel.shade(base: base, rim: rim, domeRadius: domeRadius, canvas: bounds,
-                                           useKernel: options.usesPuffyKernel && hasMetal)
+                                           useKernel: options.usesPuffyKernel && hasMetal && !kernelOff,
+                                           kernel: puffyKernelProvider())
             lock.lock()
             puffyPath = shaded.path
+            lastDrawnPath = shaded.path
             lock.unlock()
             return (shaded.image, puffyContext)
         }

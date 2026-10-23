@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreImage
 import Foundation
 import IOSurface
 import Testing
@@ -269,6 +270,47 @@ struct StyleRendererTests {
         let parameters = request(points: CGSize(width: 200, height: 400), scale: 2).onScreenParameters(sourceLongSide: 512)
         #expect(parameters == StyleParameters.forStickerPixels(longSide: 800, sourceLongSide: 512))
         #expect(parameters.shadowRadius == 10)
+    }
+
+    /// A kernel with Puffy's signature that compiles but draws nothing, like a
+    /// stitched kernel that fails at render time on some Mac.
+    private static let blankKernel: CIKernel? = PuffyKernel.compile("""
+    #include <metal_stdlib>
+    using namespace metal;
+    #include <CoreImage/CoreImage.h>
+    extern "C" {
+    namespace coreimage {
+    [[stitchable]] float4 puffyShade(sampler base, sampler h1, sampler h2, sampler h3,
+                                     float3 light, float heightPx, float step, float ambient, float diffuse,
+                                     float shininess, float specular, destination dest) {
+        return float4(0.0);
+    }
+    }
+    }
+    """).kernel
+
+    @Test func aKernelThatDrawsNothingFallsBackToTheBuiltInPuffyForGood() throws {
+        let blank = try #require(Self.blankKernel)
+        let r = renderer(Fixtures.image(width: 400, height: 200))
+        r.puffyKernelProvider = { blank }
+        let first = try r.renderNow(request(points: CGSize(width: 100, height: 50), style: .puffy))
+        #expect(r.lastPuffyPath == .builtIn)
+        #expect(first.alphaMask.bytes.contains { $0 > 0 }, "the sticker must not be invisible")
+        #expect(r.isPuffyKernelDisabled)
+        _ = try r.renderNow(request(points: CGSize(width: 80, height: 40), style: .puffy))
+        #expect(r.lastPuffyPath == .builtIn)
+    }
+
+    @Test func anEmptyMasterDoesNotDisableThePuffyKernel() throws {
+        let blank = try #require(Self.blankKernel)
+        let side = 64
+        let clear = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!.makeImage()!
+        let r = renderer(clear)
+        r.puffyKernelProvider = { blank }
+        _ = try? r.renderNow(request(points: CGSize(width: 32, height: 32), style: .puffy))
+        #expect(!r.isPuffyKernelDisabled)
     }
 }
 
