@@ -31,7 +31,7 @@ Every task in every milestone implicitly includes these (values copied from the 
 - Bundle ID **`com.ethan.stickermine`**; product name **`Stickermine`**; `LSUIElement` = true.
 - **No third-party dependencies, no App Sandbox, no entitlements file.** Hardened runtime; Developer ID signing by SHA-1 `DEA1A3749B06CF3619F72152EFC35A48E380C4E4` in `build.sh` only.
 - Swift settings: `SWIFT_VERSION = 5.0`, `SWIFT_STRICT_CONCURRENCY = minimal`, `SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated`, `SWIFT_APPROACHABLE_CONCURRENCY = NO`. Mark AppKit-facing classes `@MainActor` explicitly.
-- Project format **"Xcode 16.0"** (objectVersion 77). `GENERATE_INFOPLIST_FILE = NO`; no `MARKETING_VERSION`, `CURRENT_PROJECT_VERSION` or `INFOPLIST_KEY_*` anywhere.
+- Project format **"Xcode 16.0"** (objectVersion 77). `GENERATE_INFOPLIST_FILE = NO` (the never-shipped `StickermineTests` bundle alone uses `YES`; pinned by `ProjectSettingsTests`); no `MARKETING_VERSION`, `CURRENT_PROJECT_VERSION` or `INFOPLIST_KEY_*` anywhere.
 - Data lives in **`~/Library/Application Support/com.ethan.stickermine/`** (`library.json` + `stickers/<uuid>.png`). Tests never touch it or `UserDefaults.standard`.
 - Style order everywhere in the UI: **1 Puffy, 2 Outline, 3 Shadow, 4 None**.
 - Sticker window level: `CGWindowLevelForKey(.desktopIconWindow) + 1`; Float on top `.floating`; collection behaviour `[.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone]`. **Never write `ignoresMouseEvents` on a sticker panel** (except in the hidden fallback mode).
@@ -191,15 +191,40 @@ final class StyleRenderer {
 ```swift
 @MainActor enum PanelPolicy {
     static var stickerLevel: NSWindow.Level { get }             // desktopIcon + 1
+    static let floatingLevel: NSWindow.Level                    // .floating (Float on top)            [M1]
     static let stickerBehavior: NSWindow.CollectionBehavior
+    static func level(onTop: Bool) -> NSWindow.Level            // floatingLevel or stickerLevel       [M1]
     static func makeStickerPanel(contentRect: NSRect) -> StickerPanel
     static func applyCommon(to panel: NSPanel, hidesOnDeactivate: Bool)   // isReleasedWhenClosed=false etc.
 }
-@MainActor final class StickerPanel: NSPanel { var placementID: UUID?; var isEditing: Bool }   // canBecomeKey == isEditing
+@MainActor final class StickerPanel: NSPanel {                  // canBecomeKey == isEditing
+    var placementID: UUID?; var isEditing: Bool
+    var onResignKey: (() -> Void)?                              //                                     [M1]
+}
+struct LayerShadow: Equatable {                                 // points; margin = ceil(3 × radius) + |offset|   [M1]
+    var radius: CGFloat; var opacity: Float; var offset: CGFloat; var margin: CGFloat { get }
+}
 @MainActor final class StickerView: NSView {                    // layer-hosting; owns `contentLayer`
     let contentLayer: CALayer
+    let hitPadLayer: CALayer; let outlineLayer: CAShapeLayer    // editing chrome                      [M1]
     var onDoubleClick: (() -> Void)?
-    func show(_ rendered: RenderedSticker, shadow: StyleParameters?, style: StickerStyle)
+    var onKeyDown: ((NSEvent) -> Bool)?; var onMagnify: ((NSEvent) -> Void)?           //              [M1]
+    var onRotate: ((NSEvent) -> Void)?; var onDragEnded: (() -> Void)?                 //              [M1]
+    private(set) var contentPointSize: CGSize; private(set) var layerShadow: LayerShadow?          //  [M1]
+    private(set) var contentScale: CGFloat; private(set) var contentRotation: CGFloat              //  [M1]
+    private(set) var isShowingEditingChrome: Bool; static let hitPadAlpha: CGFloat                 //  [M1]
+    static func frameSize(pointSize: CGSize, shadow: LayerShadow?) -> CGSize                       //  [M1]
+    static func boundingSize(of size: CGSize, scale: CGFloat, rotation: CGFloat) -> CGSize         //  [M1]
+    func showContents(_ contents: Any, pointSize: CGSize, shadow: LayerShadow?)                    //  [M1]
+    func clearContents(); func setContentTransform(scale: CGFloat, rotation: CGFloat)              //  [M1]
+    func setEditingChrome(_ visible: Bool)                                                         //  [M1]
+    func show(_ rendered: RenderedSticker, shadow: StyleParameters?, style: StickerStyle)          //  added in M2, on top of showContents
+}
+enum SurfaceContents { static func make(from image: CGImage) -> IOSurface? }       // upright BGRA, tagged colour space   [M1]
+enum BundledImages { static let mapleName: String; static func cgImage(named name: String) -> CGImage? }   //            [M1]
+extension AppDelegate {                                         // test-host guard                     [M1]
+    nonisolated static var isRunningTests: Bool                 // XCTestConfigurationFilePath != nil
+    private(set) static var didRunStartup: Bool                 // set right after the guard; AppDelegateTests expects false
 }
 @MainActor final class StickerManager {
     init(library: LibraryController, screens: ScreenProvider, renderer: StyleRenderer)
