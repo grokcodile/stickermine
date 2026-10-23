@@ -40,3 +40,10 @@ The M3 checks that need a person at the Mac (plan Task 9): the style gallery by 
 ## CI dry-run app
 
 (Task 10 Step 7: the kernel line from the dry-run app's `timings.txt`, its number of `kernel` rows, its `sdk` line, and how the puffy column of its `maple-sheet.png` looked, or why it wasn't run.)
+
+Run 40037053453 (commit 6d96c0b), ad-hoc signed, checked by the executor:
+
+- `# Puffy kernel compiled in 285 ms`
+- `9` (every subject's `puffy` row used the kernel)
+- `sdk 26.5`
+- Puffy draws: a smooth dome lit from the top-left (checked on `fringe-puffy.png`), not empty, flat or black, and without the streaks fixed in f85ba45.
