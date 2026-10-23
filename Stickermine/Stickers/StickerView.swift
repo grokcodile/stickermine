@@ -104,6 +104,12 @@ final class StickerView: NSView {
         layoutStickerLayers()
     }
 
+    /// Shows a rendered sticker at its point bounds. The M2 baseline renders no
+    /// shadow and M3 adds the layer shadow (built from `shadow`, nil for None),
+    /// so this passes no `LayerShadow` yet.
+    func show(_ rendered: RenderedSticker, shadow: StyleParameters?, style: StickerStyle) {
+        showContents(rendered.contents, pointSize: rendered.pointBounds, shadow: nil)
+    }
     /// Drops the bitmap. Call before ordering out and closing a panel for good:
     /// a closed window keeps its contents alive until the next event otherwise.
     func clearContents() {
