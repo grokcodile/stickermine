@@ -16,13 +16,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) static var didRunStartup = false
 
     /// From design/spike-results.md, Decisions: "Alpha click-through works, or
-    /// the fallback mode becomes the default?". The hidden `clickThroughFallback`
-    /// setting (spec section 12) overrides it either way.
+    /// the fallback mode becomes the default?" (keep the value M2 chose). The
+    /// hidden `clickThroughFallback` setting (spec section 12) overrides it either
+    /// way.
     static let clickThroughFallbackByDefault = false
 
     private let log = Logger(subsystem: "com.ethan.stickermine", category: "app")
     private var library: LibraryController?
     private var stickers: StickerManager?
+    private var session: SessionCoordinator?
+    private var statusItem: StatusItemController?
+    private var hotkeys: HotkeyCenter?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !Self.isRunningTests else { return }
@@ -36,11 +40,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         startStickers()
+        startCapture()
     }
 
     /// SIGTERM skips this, so nothing may depend on it; the debounced save has
-    /// usually run already.
+    /// usually run already. A running screencapture is terminated and its
+    /// temporary file deleted first (spec section 5.10).
     func applicationWillTerminate(_ notification: Notification) {
+        session?.cancel()
         library?.flush()
     }
 
@@ -76,11 +83,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.stickers = stickers
         log.notice("library \(Self.describe(library.loadResult), privacy: .public): \(library.library.stickers.count) stickers")
 
-        let arguments = ProcessInfo.processInfo.arguments
-        if arguments.contains(DebugMaple.launchArgument) {
-            DebugMaple.place(library: library, stickers: stickers, screens: screens,
-                             styles: DebugMaple.styles(in: arguments))
-        }
+        session = SessionCoordinator(capture: CaptureService(), cutout: CutoutEngine(), stickers: stickers,
+                                     library: library, store: store, renderer: renderer, screens: screens)
+    }
+
+    /// The capture triggers: the menu bar icon and the global shortcut
+    /// (default ⌃⌥⌘S; M6 reads the stored one and adds the recorder).
+    private func startCapture() {
+        // Leftovers from a run that was killed mid-capture (spec section 5.10).
+        CaptureService.deleteLeftovers()
+        guard let session else { return }
+        let shortcut = Shortcut.defaultCapture
+        let statusItem = StatusItemController(shortcut: shortcut)
+        statusItem.onCapture = { [weak session] in session?.startCapture() }
+        statusItem.onQuit = { [weak self] in self?.quit() }
+        session.onActiveChange = { [weak statusItem] active in statusItem?.sessionActive = active }
+        let hotkeys = HotkeyCenter()
+        hotkeys.register(shortcut) { [weak session] in session?.startCapture() }
+        self.statusItem = statusItem
+        self.hotkeys = hotkeys
+    }
+
+    /// The menu's Quit: cancel the session, then quit (spec section 5.2).
+    private func quit() {
+        session?.cancel()
+        NSApp.terminate(nil)
     }
 
     private static func describe(_ result: LibraryStore.LoadResult) -> String {
