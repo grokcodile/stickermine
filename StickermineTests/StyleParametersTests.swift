@@ -47,4 +47,27 @@ struct StyleParametersTests {
         #expect(p.rimRadius == 0)
         #expect(p.shadowMargin(for: .puffy) == 0)
     }
+
+    @Test func theRimReachesItsRadiusRoundedUpPlusAPixelForRimmedStylesOnly() {
+        let at800 = StyleParameters.forStickerPixels(longSide: 800, sourceLongSide: 512)
+        #expect(at800.rimReach(for: .puffy) == 13)
+        #expect(at800.rimReach(for: .outline) == 13)
+        #expect(at800.rimReach(for: .shadow) == 0)
+        #expect(at800.rimReach(for: .none) == 0)
+        let at100 = StyleParameters.forStickerPixels(longSide: 100, sourceLongSide: 512)
+        #expect(at100.rimReach(for: .outline) == 3)          // ceil(1.5) + 1
+    }
+
+    @Test func theDomeRadiusIsHalfTheInscribedRadiusClampedPer800Pixels() {
+        #expect(StyleParameters.domeRadius(inscribedRadius: 100, longSide: 800) == 50)
+        #expect(StyleParameters.domeRadius(inscribedRadius: 4, longSide: 800) == 6)       // at least 6 per 800
+        #expect(StyleParameters.domeRadius(inscribedRadius: 1000, longSide: 800) == 300)  // at most 300 per 800
+        #expect(StyleParameters.domeRadius(inscribedRadius: 4, longSide: 1600) == 12)
+        // Linear in size: twice the sticker, twice the dome.
+        for inscribed in [2.0, 60, 250, 900] {
+            #expect(StyleParameters.domeRadius(inscribedRadius: 2 * inscribed, longSide: 1600)
+                    == 2 * StyleParameters.domeRadius(inscribedRadius: inscribed, longSide: 800))
+        }
+        #expect(StyleParameters.domeHeightPerRadius == 0.9)
+    }
 }
