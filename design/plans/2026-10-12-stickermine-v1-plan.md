@@ -26,6 +26,7 @@
 
 - **Execution notes (added during M1, binding for M2–M7):** work happens on branch `v1`; `main` holds only the design docs plus `release.yml` until a milestone is merged. Every CI dry run therefore dispatches with `gh workflow run release.yml --ref v1` and lists runs with `--branch v1` (wherever a plan says `--ref main` / `--branch main`, read `v1`). Ethan gave a standing yes to push `v1` and start that dry run at each milestone end; tags, releases, the tap, Pages and `main` still need his yes. M1's final review added two `PanelPolicyTests` tests, so every `Test run with N tests` count in M2–M7 is **N + 2**, and it widened the mouse-flag scan to all app files (allowed writers: `PanelPolicyTests.mouseFlagWriters`). `StickerPanel` counts writes of both flags (`mouseFlagWrites`, `floatingFlagWrites`): flow tests that create, place, hand over or edit sticker panels should expect both to stay 0 unless the hidden fallback mode is on (M4's `PlacementSession` especially, for the sticker panel it is handed).
 - **Carried from M2's final review (for M6):** the read-only notice must key on `LibraryController.isReadOnly`, not only on `.readOnlyNewer`: a corrupt `library.json` that couldn't be renamed aside also makes the store read-only (it returns `.recoveredFromCorrupt`), with wording per cause. `StickerManager.place` now refuses non-finite sizes and points, and `LayoutResolver` never writes a non-finite pose.
+- **Carried from M3's execution:** Puffy's height fields come from three `CIBoxBlur` passes (`PuffyKernel.heightField(rim:sigma:)`, width 2σ), not `CIGaussianBlur`, whose horizontal pass is half precision even in an RGBAf context and streaked the highlight. Test counts after M3 are plan + 7 (M1 +2, M2 review +3, M3 +2).
 
 Every task in every milestone implicitly includes these (values copied from the spec):
 
@@ -205,31 +206,62 @@ struct StyleParameters: Equatable {                             // created in M2
     static let referenceLongSide: Double; static let rimRadiusPerReference: Double; static let closingPerReference: Double
     static let shadowRadiusPerReference: Double; static let shadowOffsetPerRadius: Double
     static let shadowOpacityValue: Double; static let chokeSigmaPer512: Double                     // [M2] 800, 12, 10, 10, 0.6, 0.35, 0.5
+    static let domeRadiusPerInscribed: Double; static let domeRadiusMinPerReference: Double
+    static let domeRadiusMaxPerReference: Double; static let domeHeightPerRadius: Double           // [M3] 0.5, 6, 300, 0.9
     static func forStickerPixels(longSide: Double, sourceLongSide: Double) -> StyleParameters   // values per 800 px from spec 8
     func shadowMargin(for style: StickerStyle) -> Double        // 0 for .none, else ceil(3 × shadowRadius) + |shadowOffset|
+    func rimReach(for style: StickerStyle) -> Double            // [M3] ceil(rimRadius) + 1 for .puffy/.outline, else 0
+    static func domeRadius(inscribedRadius: Double, longSide: Double) -> Double   // [M3] clamp(0.5 × inscribed, 6, 300) per 800 px
 }
 struct RenderRequest: Equatable {                               // created in M2
     let sticker: UUID; let style: StickerStyle; let flipped: Bool; let rotation: Double
     let pointSize: CGSize                                       // unrotated on-screen size in points
     let backingScale: CGFloat
+    func onScreenParameters(sourceLongSide: Double) -> StyleParameters   // [M3] for points × backing scale: layer shadow and frame margin
 }
 struct RenderedSticker {                                        // created in M2
-    let contents: Any                                           // IOSurface or CGImage (CGImage in the M2 baseline)
-    let pixelSize: CGSize; let pointBounds: CGSize               // rotated bounding box of the sticker (no margin)
+    let contents: Any                                           // IOSurface or CGImage (StyleRenderer.Options.contents)
+    let pixelSize: CGSize; let pointBounds: CGSize               // the bitmap's box in points (uncapped: its whole pixels / backing scale [M3]): the rotated sticker plus, for Outline/Puffy, the rim's reach on every side [M3] (no shadow margin)
     let alphaMask: AlphaMask                                     // for the fallback click-through mode and hit tests
+    let backingScale: CGFloat                                    // [M3] the scale it was rendered for
 }
 struct AlphaMask { let width: Int; let height: Int; let bytes: [UInt8]; func isOpaque(atUnit p: CGPoint) -> Bool }   // p in 0–1, top-left origin; long side ≤ 512
-final class StyleRenderer {                                     // M2 baseline: every style draws the plain master
-    init(masterProvider: @escaping (UUID) -> CGImage?)         // called off the main thread
+final class StyleRenderer: @unchecked Sendable {                // [M3] the four styles; one serial render queue
+    init(masterProvider: @escaping (UUID) -> CGImage?, options: Options = .standard)   // provider called off the main thread
     static let maxPixelLongSide: Double = 2048
     func render(_ request: RenderRequest) async throws -> RenderedSticker
-    func prewarm()                                              // compiles the Puffy kernel off-main (M3)
+    func prewarm()                                              // compiles the Puffy kernel off-main (on the render queue)
     enum RenderError: Error, Equatable { case missingMaster, emptySize, contextFailed }           // [M2]
+    enum Contents: Equatable { case surface, image }                                               // [M3]
+    struct Options: Equatable { var contents: Contents; var closesRim: Bool; var usesPuffyKernel: Bool; static let standard: Options }   // [M3]
+    static let defaultContents: Contents; let options: Options                                     // [M3] from the spike decision
+    func renderNow(_ request: RenderRequest) throws -> RenderedSticker                             // [M3] synchronous, never on main
+    var inscribedMeasurementCount: Int { get }; var lastPuffyPath: PuffyKernel.Path? { get }      // [M3] diagnostics
+    func invalidateCache(for sticker: UUID)                                                         // [M3] a master changed under the same ID
     static let maxMaskLongSide: Int; static let alphaFloor: UInt8                                  // [M2] 512, 5
-    static func canvas(for request: RenderRequest) -> (width: Int, height: Int, drawSize: CGSize, pointBounds: CGSize)   // [M2]
-    static func renderBaseline(master: CGImage, request: RenderRequest) throws -> RenderedSticker   // [M2]
+    static func canvas(for request: RenderRequest) -> (width: Int, height: Int, drawSize: CGSize, pointBounds: CGSize)   // [M2]; [M3] adds the rim's reach; uncapped pointBounds = width, height / backing scale
     static func clampAlphaAndBuildMask(pixels: UnsafeMutablePointer<UInt8>, width: Int, height: Int) -> AlphaMask   // [M2]
+    static func clampAlphaAndBuildMask(pixels: UnsafeMutablePointer<UInt8>, width: Int, height: Int, rowBytes: Int) -> AlphaMask   // [M3]
 }
+enum StyleRecipes {                                             // [M3] Core Image graphs in bitmap pixels, y-up
+    static func placed(_ master: CIImage, size: CGSize, flipped: Bool, rotation: Double, canvas: CGRect) -> CIImage
+    static func silhouette(of image: CIImage) -> CIImage
+    static func grown(_ mask: CIImage, by radius: Double, canvas: CGRect) -> CIImage
+    static func shrunk(_ mask: CIImage, by distance: Double, canvas: CGRect) -> CIImage
+    static func clamped(_ image: CIImage?) -> CIImage
+    static func rim(around subject: CIImage, radius: Double, closing: Double, canvas: CGRect) -> CIImage
+    static func outline(subject: CIImage, rim: CIImage, canvas: CGRect) -> CIImage
+    static func choked(_ image: CIImage, sigma: Double, canvas: CGRect) -> CIImage
+}
+enum PuffyKernel {                                              // [M3] kernel source as a Swift string, compiled once
+    enum Path: String, Equatable { case kernel, builtIn, rimOnly }
+    struct Compiled { let kernel: CIKernel?; let error: Error?; let seconds: TimeInterval; let onMainThread: Bool }
+    static let source: String; static let functionName: String; static let compiled: Compiled
+    static func compile(_ source: String) -> Compiled
+    static func shade(base: CIImage, rim: CIImage, domeRadius: Double, canvas: CGRect, useKernel: Bool) -> (image: CIImage, path: Path)
+    static func inscribedRadius(of master: CGImage, context: CIContext) -> Double   // master pixels, measured on a ≤ 1024 px copy
+}
+enum StyleGallery { static let launchArgument: String }         // [M3] debug: -styleGallery writes every style to PNGs and quits
 ```
 
 ### Stickers (M1 spike → M2/M3/M5)
@@ -261,12 +293,18 @@ struct LayerShadow: Equatable {                                 // points; margi
     private(set) var isShowingEditingChrome: Bool; static let hitPadAlpha: CGFloat                 //  [M1]
     static func frameSize(pointSize: CGSize, shadow: LayerShadow?) -> CGSize                       //  [M1]
     static func boundingSize(of size: CGSize, scale: CGFloat, rotation: CGFloat) -> CGSize         //  [M1]
-    func showContents(_ contents: Any, pointSize: CGSize, shadow: LayerShadow?)                    //  [M1]
+    func showContents(_ contents: Any, pointSize: CGSize, shadow: LayerShadow?, frameMargin: CGFloat? = nil)   // [M1]; [M3] frameMargin (nil: the shadow's margin)
     func clearContents(); func setContentTransform(scale: CGFloat, rotation: CGFloat)              //  [M1]
     func setEditingChrome(_ visible: Bool)                                                         //  [M1]
-    func show(_ rendered: RenderedSticker, shadow: StyleParameters?, style: StickerStyle)          //  added in M2, on top of showContents
+    func show(_ rendered: RenderedSticker, shadow: StyleParameters?, style: StickerStyle)   // added in M2; [M3] shadow = request.onScreenParameters(…), nil or .none: no shadow
+    private(set) var frameMargin: CGFloat; var onBackingScaleChange: ((CGFloat) -> Void)?   // [M3] frameMargin: shadowMargin(for:) rounded up to whole pixels, over the backing scale (points); the callback gets the window's new backing scale
+    static func layerShadow(for parameters: StyleParameters?, style: StickerStyle, backingScale: CGFloat) -> LayerShadow?   // [M3]
 }
-enum SurfaceContents { static func make(from image: CGImage) -> IOSurface? }       // upright BGRA, tagged colour space   [M1]
+enum SurfaceContents {                                          // upright BGRA, tagged colour space   [M1]
+    static func make(from image: CGImage) -> IOSurface?
+    static func blank(width: Int, height: Int) -> IOSurface?; static func tag(_ surface: IOSurface, with colorSpace: CGColorSpace)   // [M3]
+    static func colorSpace(for image: CGImage) -> CGColorSpace?                                                                   // [M3]
+}
 enum BundledImages { static let mapleName: String; static func cgImage(named name: String) -> CGImage? }   //            [M1]
 extension AppDelegate {                                         // test-host guard                     [M1]
     nonisolated static var isRunningTests: Bool                 // XCTestConfigurationFilePath != nil
@@ -293,6 +331,7 @@ extension AppDelegate {                                         // test-host gua
     func refreshPanel(for placement: UUID)                      // [M2] re-resolve one placement after a model write
     func closeAllPanels(); func rebuildAllPanels()              // [M2]
     func commitRender(_ rendered: RenderedSticker, for request: RenderRequest, placement id: UUID)   // [M2]
+    func backingScaleChanged(for id: UUID, to scale: CGFloat)   // [M3] windowDidChangeBackingProperties → re-render (not the placement being edited); frame = bitmap box (rim included) + margin
     func recordKeyForUserEdit(on display: DisplayInfo) -> String   // [M2] creates the record or saves a fingerprint re-key
     func enableClickThroughFallback(); var isClickThroughFallbackEnabled: Bool { get }             // [M2]
     func startObservingDisplayChanges(); func systemEvent(recheckLater: Bool)                      // [M2]
