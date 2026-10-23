@@ -14,12 +14,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// early (nothing in M1's startup is visible enough to test otherwise).
     private(set) static var didRunStartup = false
 
+    /// The M1 sticker-window spike, running only when launched with `-spike`.
+    /// M2 removes it together with SpikeController.
+    private var spike: SpikeController?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !Self.isRunningTests else { return }
         Self.didRunStartup = true
         // LSUIElement already makes this an agent app; saying so in code keeps it
         // true even for a launch whose Info.plist was not the one we built.
         NSApp.setActivationPolicy(.accessory)
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains(SpikeController.launchArgument) {
+            let controller = SpikeController(arguments: arguments)
+            spike = controller
+            controller.start()
+        }
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
