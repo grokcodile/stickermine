@@ -15,7 +15,7 @@
 Signature changes (every existing call site still compiles):
 
 1. `StickerManager.place(sticker:style:centerOnScreen:pointSize:)` returns `UUID?` (`@discardableResult`): the new placement's ID, or nil when the library is read-only, the sticker is unknown or there is no display. M4's placement session needs the ID for the support-ask counter and logging.
-2. `PanelPolicy.makeStickerPanel(contentRect: NSRect, hideFromSharing: Bool = true) -> StickerPanel`. Verified while writing this plan (macOS 27.2, Xcode 27 beta test host): once a window's `sharingType` has been set to `.none`, a later `.readOnly` leaves the getter at `.none` whatever the window was created with (a panel created `.readOnly` switches to `.none` but not back). Research claim C1 saw capture follow a none→readOnly flip, so the window server may honour it and only the getter lag; recreating the panel is correct either way. So a panel must start with the right value, and `StickerManager.setSharingHidden(false)` recreates the panels that stay hidden. M1's comment in `PanelPolicy` ("StickerManager switches live panels to .readOnly when it is off") was wrong on 27.2; Task 11 replaces it.
+2. `PanelPolicy.makeStickerPanel(contentRect: NSRect, hideFromSharing: Bool = true) -> StickerPanel`. Verified while writing this plan (macOS 27.2, Xcode 27 beta test host): once a window's `sharingType` has been set to `.none`, a later `.readOnly` leaves the getter at `.none` whatever the window was created with (a panel created `.readOnly` switches to `.none` but not back). Research claim C1 saw capture follow a none→readOnly flip, so the window server may honour it and only the getter lag; recreating the panel is correct either way. So a panel must start with the right value, and `StickerManager.setSharingHidden(false)` recreates the panels that stay hidden. Re-checked 2026-10-22 on macOS 27.2 (Darwin 27.2.0): the getter still sticks. The tests accept either behaviour, so a macOS whose getter follows the setter only skips the recreation. M1's comment in `PanelPolicy` ("StickerManager switches live panels to .readOnly when it is off") was wrong on 27.2; Task 11 replaces it.
 3. `DisplayInfo` gains `let inMirrorSet: Bool` (`CGDisplayIsInMirrorSet`), with an explicit initializer whose `inMirrorSet` parameter defaults to `false`: the reconcile snapshot is `[uuid: (frame, backingScaleFactor, mirror state)]` (spec section 11).
 4. `LibraryController.init(store: LibraryStore, saveDelay: TimeInterval = 0.5)` and `StickerManager.init(library:screens:renderer:reconcileDelay: TimeInterval = 0.45)`: the delays are injectable for tests; the contract's calls are unchanged.
 
@@ -3783,9 +3783,11 @@ struct StickerManagerTests {
         let renders = h.manager.renderRequestsIssued
         let old = try #require(h.manager.panel(for: here.id))
         h.manager.setSharingHidden(false)
-        // On macOS 27.2 the old panel keeps reporting .none, so it is replaced.
+        // On macOS 27.2 the old panel keeps reporting .none, so it is replaced; on
+        // a macOS whose getter follows the setter, the same panel simply stays.
         let new = try #require(h.manager.panel(for: here.id))
-        #expect(new !== old)
+        #expect((new !== old) == (old.sharingType != .readOnly))
+        #expect(new.sharingType == .readOnly)
         let view = try #require(new.contentView as? StickerView)
         #expect(view.contentLayer.contents != nil)
         #expect(view.contentPointSize == CGSize(width: 200, height: 100))
