@@ -1,0 +1,13 @@
+{
+  "images" : [
+    {
+      "filename" : "Maple.png",
+      "idiom" : "universal",
+      "scale" : "2x"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}
