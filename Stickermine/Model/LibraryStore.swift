@@ -140,7 +140,13 @@ final class LibraryStore {
     /// lastStyle puffy, no placements), and flags the fixed tutorial IDs.
     func repair(_ library: Library) -> Library {
         var result = library
-        let onDisk = pngFiles()
+        guard let onDisk = pngFiles() else {
+            // The folder couldn't be listed this time. That is not "no PNGs":
+            // dropping every entry here would wipe the history (and the next save
+            // would make it permanent), so the library is left exactly as loaded.
+            log.error("couldn't list stickers/; launch repair skipped")
+            return result
+        }
         result.stickers.removeAll { onDisk[$0.id] == nil }
         let known = Set(result.stickers.map(\.id))
         let adopted = onDisk
@@ -158,10 +164,11 @@ final class LibraryStore {
         return result
     }
 
-    /// `stickers/<UUID>.png` files on disk, by sticker ID.
-    private func pngFiles() -> [UUID: URL] {
-        let urls = (try? FileManager.default.contentsOfDirectory(
-            at: stickersDirectory, includingPropertiesForKeys: [.creationDateKey])) ?? []
+    /// `stickers/<UUID>.png` files on disk, by sticker ID; nil when the folder
+    /// can't be listed (a permissions or I/O error), which repair must not read as empty.
+    private func pngFiles() -> [UUID: URL]? {
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: stickersDirectory, includingPropertiesForKeys: [.creationDateKey]) else { return nil }
         var result: [UUID: URL] = [:]
         for url in urls where url.pathExtension.lowercased() == "png" {
             if let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent) {

@@ -47,4 +47,4 @@ M2's `StickerManager` keeps sticker windows in step with displays (spec section 
 
 Fill in after the run: which rows failed (if any), what was fixed, and the commits that fixed them.
 
-Not run yet (2026-10-23): Ethan deferred the hands-on checks; every row is to be run before release. The reconcile logic these rows exercise is covered by `StickerManagerTests` with `FakeScreens` (displays disappearing and returning, ghosts, mirroring, nothing written).
+Not run yet (2026-10-23): Ethan deferred the hands-on checks; every row is to be run before release. Until then, `StickerManagerTests` with `FakeScreens` covers part of what these rows exercise: displays disappearing and returning, no usable display, a resolution change borrowing the closest size, the Core Graphics remove callback, and that none of it writes the library. Not covered by unit tests: mirroring (only `DisplayRegistryTests` filters mirror secondaries), the stacking order after a reconnect, and switching a resolution back; those rest on the hardware rows.

@@ -74,6 +74,7 @@ struct StickerManagerTests {
         #expect(panel.frame == CGRect(x: 40_860, y: 490, width: 200, height: 100))
         #expect(panel.level == PanelPolicy.stickerLevel)
         #expect(panel.sharingType == .none)
+        #expect(panel.mouseFlagWrites == 0 && panel.floatingFlagWrites == 0)
         #expect(h.manager.panel(for: away.id) == nil)
         // A display without a record shows nothing and gets no record (spec section 11).
         #expect(h.library.library.displays[Fixtures.mainUUID] == nil)
@@ -259,6 +260,7 @@ struct StickerManagerTests {
         let panel = try #require(h.manager.panel(for: id))
         #expect(panel.isVisible)
         #expect(panel.frame == CGRect(x: 40_430, y: 245, width: 100, height: 50))
+        #expect(panel.mouseFlagWrites == 0 && panel.floatingFlagWrites == 0)
     }
 
     @Test func aNewPlacementGoesOnTopOfItsDisplay() throws {
@@ -354,6 +356,7 @@ struct StickerManagerTests {
         #expect(shown.sharingType == .readOnly)
         #expect(shown.isVisible)
         #expect(shown.frame == hidden.frame)
+        #expect(shown.mouseFlagWrites == 0 && shown.floatingFlagWrites == 0)
         let added = try #require(h.manager.place(sticker: sticker, style: .none, centerOnScreen: NSPoint(x: 41_000, y: 500),
                                                  pointSize: CGSize(width: 100, height: 50)))
         #expect(h.manager.panel(for: added)?.sharingType == .readOnly)
@@ -412,6 +415,7 @@ struct StickerManagerTests {
         #expect(!old.isVisible)
         #expect(new.isVisible)
         #expect(new.frame == old.frame)
+        #expect(new.mouseFlagWrites == 0 && new.floatingFlagWrites == 0)
     }
 
     @Test func onlyTheNewestRenderIsShown() async throws {
@@ -483,6 +487,22 @@ struct StickerManagerTests {
         // In the gap between them: the external display's right edge is nearer.
         #expect(StickerManager.display(containing: NSPoint(x: 42_000, y: 100), in: [main, external])?.uuid == external.uuid)
         #expect(StickerManager.display(containing: .zero, in: []) == nil)
+    }
+
+    @Test func aNonFinitePlacementIsRefused() throws {
+        let h = try Harness(Library(stickers: [Fixtures.sticker(sticker)], displays: [:]),
+                            displays: [Fixtures.external()])
+        defer { h.finish() }
+        h.manager.restoreAll()
+        for size in [CGSize(width: CGFloat.infinity, height: 50), CGSize(width: CGFloat.nan, height: 50)] {
+            #expect(h.manager.place(sticker: sticker, style: .shadow, centerOnScreen: NSPoint(x: 40_480, y: 270),
+                                    pointSize: size) == nil)
+        }
+        #expect(h.manager.place(sticker: sticker, style: .shadow,
+                                centerOnScreen: NSPoint(x: CGFloat.nan, y: 270),
+                                pointSize: CGSize(width: 100, height: 50)) == nil)
+        #expect(h.library.library.displays[Fixtures.externalUUID] == nil)
+        #expect(!h.library.hasPendingSave)
     }
 }
 

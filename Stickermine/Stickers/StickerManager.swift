@@ -236,7 +236,10 @@ final class StickerManager {
     func place(sticker: UUID, style: StickerStyle, centerOnScreen: NSPoint, pointSize: CGSize) -> UUID? {
         guard !library.isReadOnly, let record = library.library.sticker(sticker) else { return nil }
         let natural = record.naturalPointSize
-        guard natural.width > 0, pointSize.width > 0,
+        // A non-finite size or point would crash AppKit when it reaches a window
+        // frame, and poison every later save if it reached library.json.
+        guard natural.width > 0, pointSize.width > 0, pointSize.width.isFinite, pointSize.height.isFinite,
+              centerOnScreen.x.isFinite, centerOnScreen.y.isFinite,
               let display = Self.display(containing: centerOnScreen, in: screens.currentDisplays())
         else { return nil }
         let center = StickerGeometry.reachableCenter(centerOnScreen, visibleFrame: display.visibleFrame)

@@ -80,6 +80,9 @@ enum LayoutResolver {
     /// A move or scale at `size`: writes only `poses[size]` (creating it when
     /// the pose was borrowed).
     static func writing(_ pose: Pose, to placement: Placement, at size: DisplaySize) -> Placement {
+        // A NaN or infinity in library.json makes every later save throw, so a
+        // non-finite pose leaves the placement as it was.
+        guard pose.isFinite else { return placement }
         var result = placement
         result.poses[size.key] = pose
         return result
@@ -87,8 +90,16 @@ enum LayoutResolver {
 
     /// A placement (fresh, re-placed or dropped on another display): `poses = [size: pose]`.
     static func placing(_ pose: Pose, to placement: Placement, at size: DisplaySize) -> Placement {
+        // A NaN or infinity in library.json makes every later save throw, so a
+        // non-finite pose leaves the placement as it was.
+        guard pose.isFinite else { return placement }
         var result = placement
         result.poses = [size.key: pose]
         return result
     }
+}
+
+extension Pose {
+    /// All three values are finite numbers (JSON can't store NaN or infinity).
+    var isFinite: Bool { x.isFinite && y.isFinite && scale.isFinite }
 }

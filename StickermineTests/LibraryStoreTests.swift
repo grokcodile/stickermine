@@ -230,4 +230,21 @@ struct LibraryStoreTests {
         #expect(placement.style == .puffy)
         #expect(!placement.flipped && !placement.onTop && placement.rotation == 0)
     }
+
+    @Test func anUnreadableStickersFolderKeepsHistoryAndPlacements() throws {
+        // A listing error is not "no PNGs": repair must not drop every sticker
+        // (and their placements) because the folder couldn't be read this once.
+        let root = Fixtures.temporaryDirectory()
+        let store = LibraryStore(root: root)
+        defer {
+            try? fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: store.stickersDirectory.path)
+            try? fileManager.removeItem(at: root)
+        }
+        let ids = [UUID(), UUID()]
+        try writePNGs(ids, to: store)
+        let library = sample(stickers: ids)
+        try store.save(library)
+        try fileManager.setAttributes([.posixPermissions: 0], ofItemAtPath: store.stickersDirectory.path)
+        #expect(LibraryStore(root: root).load() == .loaded(library))
+    }
 }

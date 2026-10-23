@@ -105,4 +105,15 @@ struct LayoutResolverTests {
         let placed = LayoutResolver.placing(Pose(x: 0.6, y: 0.4, scale: 0.9), to: original, at: size("1512x982"))
         #expect(placed.poses == ["1512x982": Pose(x: 0.6, y: 0.4, scale: 0.9)])
     }
+
+    @Test func nonFinitePosesAreNeverWritten() {
+        // One NaN or infinity in library.json makes every later save throw, so a
+        // non-finite pose leaves the placement as it was.
+        let size = DisplaySize(width: 1920, height: 1080)
+        let start = Placement(sticker: UUID(), style: .puffy, poses: [size.key: Pose(x: 0.5, y: 0.5, scale: 1)])
+        for bad in [Pose(x: .nan, y: 0.5, scale: 1), Pose(x: 0.5, y: .infinity, scale: 1), Pose(x: 0.5, y: 0.5, scale: -.infinity)] {
+            #expect(LayoutResolver.writing(bad, to: start, at: size) == start)
+            #expect(LayoutResolver.placing(bad, to: start, at: size) == start)
+        }
+    }
 }
