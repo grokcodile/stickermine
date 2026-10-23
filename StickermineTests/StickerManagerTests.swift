@@ -381,14 +381,13 @@ struct StickerManagerTests {
         let renders = h.manager.renderRequestsIssued
         let old = try #require(h.manager.panel(for: here.id))
         h.manager.setSharingHidden(false)
-        // On macOS 27.2 the old panel keeps reporting .none, so it is replaced; on
-        // a macOS whose getter follows the setter, the same panel simply stays.
+        // On macOS 27.2 the old panel keeps reporting .none, so it is replaced.
         let new = try #require(h.manager.panel(for: here.id))
-        #expect((new !== old) == (old.sharingType != .readOnly))
-        #expect(new.sharingType == .readOnly)
+        #expect(new !== old)
         let view = try #require(new.contentView as? StickerView)
         #expect(view.contentLayer.contents != nil)
-        #expect(view.contentPointSize == CGSize(width: 200, height: 100))
+        // Outline's bitmap is the sticker plus its rim on every side.
+        #expect(view.contentPointSize == rendered.pointBounds)
         #expect(h.manager.renderRequestsIssued == renders)
     }
 
@@ -435,7 +434,8 @@ struct StickerManagerTests {
         #expect(view.contentLayer.contents == nil)
         h.manager.commitRender(rendered, for: current, placement: here.id)
         #expect(view.contentLayer.contents != nil)
-        #expect(view.contentPointSize == CGSize(width: 200, height: 100))
+        // Outline's bitmap is the sticker plus its rim on every side.
+        #expect(view.contentPointSize == rendered.pointBounds)
         h.manager.remove(placement: here.id)
         h.manager.commitRender(rendered, for: current, placement: here.id)   // placement gone: ignored
     }

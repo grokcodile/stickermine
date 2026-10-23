@@ -113,11 +113,11 @@ struct StickerViewTests {
         let image = TestImages.bands(width: 300, height: 120, top: (0, 255, 0), bottom: (0, 0, 255))
         let rendered = RenderedSticker(contents: image, pixelSize: CGSize(width: 300, height: 120),
                                        pointBounds: CGSize(width: 150, height: 60),
-                                       alphaMask: AlphaMask(width: 1, height: 1, bytes: [255]))
+                                       alphaMask: AlphaMask(width: 1, height: 1, bytes: [255]), backingScale: 2)
         view.show(rendered, shadow: nil, style: .outline)
         #expect(view.contentPointSize == CGSize(width: 150, height: 60))
         #expect((view.contentLayer.contents as AnyObject?) === image)
-        // The M2 baseline draws no shadow; M3 adds it.
+        // Without style parameters there is no shadow (Task 6 makes show() use them).
         #expect(view.layerShadow == nil)
         #expect(view.contentLayer.shadowOpacity == 0)
     }
