@@ -108,17 +108,74 @@ struct StickerViewTests {
         #expect(view.contentScale == 2)
     }
 
+    private func rendered(_ image: CGImage, points: CGSize, scale: CGFloat) -> RenderedSticker {
+        RenderedSticker(contents: image, pixelSize: CGSize(width: image.width, height: image.height),
+                        pointBounds: points, alphaMask: AlphaMask(width: 1, height: 1, bytes: [255]),
+                        backingScale: scale)
+    }
+
     @Test func showingARenderedStickerUsesItsPointBounds() {
         let view = makeView()
         let image = TestImages.bands(width: 300, height: 120, top: (0, 255, 0), bottom: (0, 0, 255))
-        let rendered = RenderedSticker(contents: image, pixelSize: CGSize(width: 300, height: 120),
-                                       pointBounds: CGSize(width: 150, height: 60),
-                                       alphaMask: AlphaMask(width: 1, height: 1, bytes: [255]), backingScale: 2)
-        view.show(rendered, shadow: nil, style: .outline)
+        view.show(rendered(image, points: CGSize(width: 150, height: 60), scale: 2), shadow: nil, style: .outline)
         #expect(view.contentPointSize == CGSize(width: 150, height: 60))
         #expect((view.contentLayer.contents as AnyObject?) === image)
-        // Without style parameters there is no shadow (Task 6 makes show() use them).
+        // Without parameters there is no shadow and no margin.
         #expect(view.layerShadow == nil)
         #expect(view.contentLayer.shadowOpacity == 0)
+        #expect(view.frameMargin == 0)
+    }
+
+    @Test func theLayerShadowIsThePixelParametersInPoints() {
+        let view = makeView()
+        let image = TestImages.bands(width: 800, height: 400, top: (0, 255, 0), bottom: (0, 0, 255))
+        // 400 × 200 pt at 2×: 800 px long, so radius 10 px and offset 6 px.
+        let parameters = StyleParameters.forStickerPixels(longSide: 800, sourceLongSide: 800)
+        for style in [StickerStyle.puffy, .outline, .shadow] {
+            view.show(rendered(image, points: CGSize(width: 400, height: 200), scale: 2), shadow: parameters, style: style)
+            #expect(view.layerShadow == LayerShadow(radius: 5, opacity: 0.35, offset: 3), "\(style)")
+            #expect(view.contentLayer.shadowRadius == 5)
+            #expect(view.contentLayer.shadowOpacity == 0.35)
+            #expect(view.contentLayer.shadowOffset == CGSize(width: 0, height: -3))
+            // StyleParameters.shadowMargin (36 px) in points.
+            #expect(view.frameMargin == 18)
+        }
+        // A fractional margin is rounded up to whole device pixels: 466.74 px long
+        // gives ceil(17.50) + 3.50 = 21.50 px, shown as 22 px = 11 pt.
+        let odd = StyleParameters.forStickerPixels(longSide: 466.74, sourceLongSide: 910)
+        view.show(rendered(image, points: CGSize(width: 233.37, height: 116.69), scale: 2), shadow: odd, style: .shadow)
+        #expect(view.frameMargin == 11)
+    }
+
+    @Test func noneHasNoShadowAndNoMargin() {
+        let view = makeView()
+        let image = TestImages.bands(width: 8, height: 8, top: (0, 0, 0), bottom: (0, 0, 0))
+        let parameters = StyleParameters.forStickerPixels(longSide: 800, sourceLongSide: 800)
+        view.show(rendered(image, points: CGSize(width: 4, height: 4), scale: 2), shadow: parameters, style: .outline)
+        #expect(view.frameMargin > 0)
+        view.show(rendered(image, points: CGSize(width: 4, height: 4), scale: 2), shadow: parameters, style: .none)
+        #expect(view.layerShadow == nil)
+        #expect(view.contentLayer.shadowOpacity == 0)
+        #expect(view.frameMargin == 0)
+    }
+
+    @Test func rawContentsUseTheLayerShadowsOwnMargin() {
+        let view = makeView()
+        view.showContents(TestImages.bands(width: 2, height: 2, top: (0, 0, 0), bottom: (0, 0, 0)),
+                          pointSize: pointSize, shadow: shadow)
+        #expect(view.frameMargin == shadow.margin)
+    }
+
+    @Test func aBackingScaleChangeIsReportedWithTheWindowsScale() {
+        let view = makeView()
+        var reported: [CGFloat] = []
+        view.onBackingScaleChange = { reported.append($0) }
+        view.viewDidChangeBackingProperties()
+        #expect(reported.isEmpty, "no window yet")
+        let panel = PanelPolicy.makeStickerPanel(contentRect: NSRect(origin: .zero, size: view.frame.size))
+        defer { panel.close() }
+        panel.contentView = view
+        view.viewDidChangeBackingProperties()
+        #expect(reported.last == panel.backingScaleFactor)
     }
 }

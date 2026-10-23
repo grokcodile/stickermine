@@ -24,10 +24,19 @@ final class StickerView: NSView {
     var onRotate: ((NSEvent) -> Void)?
     /// Called right after `performDrag(with:)` returns for a drag started while editing.
     var onDragEnded: (() -> Void)?
+    /// The window's backing scale after it changed (moved to a display with
+    /// another scale, or the display's scale changed): the bitmap must be
+    /// re-rendered at the new scale (spec section 11).
+    var onBackingScaleChange: ((CGFloat) -> Void)?
 
     /// The sticker's unrotated, unscaled size in points (the bitmap's bounds).
     private(set) var contentPointSize: CGSize = .zero
     private(set) var layerShadow: LayerShadow?
+    /// The transparent padding the window keeps on every side of the shown
+    /// bitmap's box, in points: `StyleParameters.shadowMargin(for:)` rounded up
+    /// to whole pixels, over the backing scale, for a rendered sticker;
+    /// `LayerShadow.margin` for raw contents; 0 without a shadow (spec section 9).
+    private(set) var frameMargin: CGFloat = 0
     private(set) var contentScale: CGFloat = 1
     private(set) var contentRotation: CGFloat = 0
     private(set) var isShowingEditingChrome = false
@@ -85,10 +94,12 @@ final class StickerView: NSView {
 
     /// Shows `contents` (a CGImage or an IOSurface, as accepted by
     /// `CALayer.contents`) at `pointSize`, with an optional layer shadow.
-    /// M2 adds `show(_:shadow:style:)` on top of this.
-    func showContents(_ contents: Any, pointSize: CGSize, shadow: LayerShadow?) {
+    /// `frameMargin` defaults to the shadow's own margin (0 without one);
+    /// `show(_:shadow:style:)` passes `StyleParameters.shadowMargin` in points.
+    func showContents(_ contents: Any, pointSize: CGSize, shadow: LayerShadow?, frameMargin: CGFloat? = nil) {
         contentPointSize = pointSize
         layerShadow = shadow
+        self.frameMargin = frameMargin ?? shadow?.margin ?? 0
         withoutAnimation {
             contentLayer.contents = contents
             if let shadow {
@@ -104,12 +115,32 @@ final class StickerView: NSView {
         layoutStickerLayers()
     }
 
-    /// Shows a rendered sticker at its point bounds. The M2 baseline renders no
-    /// shadow and M3 adds the layer shadow (built from `shadow`, nil for None),
-    /// so this passes no `LayerShadow` yet.
+    /// Shows a rendered sticker at its point bounds with its drop shadow:
+    /// `shadow` holds the style parameters for the sticker's on-screen pixel
+    /// size (`RenderRequest.onScreenParameters(sourceLongSide:)`), which become
+    /// points through the backing scale the bitmap was rendered for. None, or
+    /// a nil `shadow`, shows no shadow and needs no margin (spec sections 8–9).
+    /// The shadow stays unrasterized: the content is static between gestures.
     func show(_ rendered: RenderedSticker, shadow: StyleParameters?, style: StickerStyle) {
-        showContents(rendered.contents, pointSize: rendered.pointBounds, shadow: nil)
+        let layer = Self.layerShadow(for: shadow, style: style, backingScale: rendered.backingScale)
+        // Whole device pixels, so the bitmap stays on the pixel grid inside the
+        // backing-aligned frame (spec section 9).
+        let pixels = CGFloat(shadow?.shadowMargin(for: style) ?? 0).rounded(.up)
+        let margin = layer == nil ? 0 : pixels / rendered.backingScale
+        showContents(rendered.contents, pointSize: rendered.pointBounds, shadow: layer, frameMargin: margin)
     }
+
+    /// The layer shadow for pixel `parameters` at `backingScale`: black at the
+    /// parameters' opacity, radius and downward offset in points. nil for None,
+    /// without parameters, or when the radius is zero.
+    static func layerShadow(for parameters: StyleParameters?, style: StickerStyle,
+                            backingScale: CGFloat) -> LayerShadow? {
+        guard let parameters, style != .none, backingScale > 0, parameters.shadowRadius > 0 else { return nil }
+        return LayerShadow(radius: CGFloat(parameters.shadowRadius) / backingScale,
+                           opacity: Float(parameters.shadowOpacity),
+                           offset: CGFloat(parameters.shadowOffset) / backingScale)
+    }
+
     /// Drops the bitmap. Call before ordering out and closing a panel for good:
     /// a closed window keeps its contents alive until the next event otherwise.
     func clearContents() {
@@ -147,6 +178,7 @@ final class StickerView: NSView {
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         matchOutlineToBackingScale()
+        if let scale = window?.backingScaleFactor { onBackingScaleChange?(scale) }
     }
 
     private func matchOutlineToBackingScale() {
