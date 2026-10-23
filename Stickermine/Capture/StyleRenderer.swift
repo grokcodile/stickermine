@@ -125,6 +125,8 @@ final class StyleRenderer: @unchecked Sendable {
     private var inscribed: [UUID: Inscribed] = [:]
     private var measurements = 0
     private var puffyPath: PuffyKernel.Path?
+    /// Masters that aren't in the library (yet): the picker's cutouts.
+    private var inFlight: [UUID: CGImage] = [:]
 
     /// `masterProvider` loads a sticker's master image. It is called off the
     /// main thread and must be thread-safe.
@@ -201,10 +203,36 @@ final class StyleRenderer: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Renders for `sticker` use `image` instead of `masterProvider` until it is
+    /// cleared with nil: the picker's previews and the placement render a
+    /// cutout before (and while) its PNG is written. Setting or clearing it
+    /// also forgets what was measured for that ID.
+    func setInFlightMaster(_ image: CGImage?, for sticker: UUID) {
+        lock.lock()
+        inFlight[sticker] = image
+        inscribed[sticker] = nil
+        lock.unlock()
+    }
+
+    /// How many in-flight masters are registered (tests: the picker lets go of them).
+    var inFlightMasterCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return inFlight.count
+    }
+
+    /// An in-flight master, else the provider's.
+    private func master(for sticker: UUID) -> CGImage? {
+        lock.lock()
+        let image = inFlight[sticker]
+        lock.unlock()
+        return image ?? masterProvider(sticker)
+    }
+
     /// Renders on the calling thread. The app only reaches it through `render`
     /// (the render queue); the gallery and tests call it from background tasks.
     func renderNow(_ request: RenderRequest) throws -> RenderedSticker {
-        guard let master = masterProvider(request.sticker) else { throw RenderError.missingMaster }
+        guard let master = master(for: request.sticker) else { throw RenderError.missingMaster }
         guard request.pointSize.width > 0, request.pointSize.height > 0, request.backingScale > 0,
               master.width > 0, master.height > 0
         else { throw RenderError.emptySize }

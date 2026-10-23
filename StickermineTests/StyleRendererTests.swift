@@ -312,6 +312,28 @@ struct StyleRendererTests {
         _ = try? r.renderNow(request(points: CGSize(width: 32, height: 32), style: .puffy))
         #expect(!r.isPuffyKernelDisabled)
     }
+
+    @Test func anInFlightMasterIsRenderedUntilItIsCleared() async throws {
+        let renderer = self.renderer(nil)
+        let square = request(points: CGSize(width: 50, height: 50), style: .none)
+        await #expect(throws: StyleRenderer.RenderError.missingMaster) { _ = try await renderer.render(square) }
+        renderer.setInFlightMaster(Masters.square(side: 100), for: id)
+        #expect(renderer.inFlightMasterCount == 1)
+        #expect(try await renderer.render(square).pixelSize == CGSize(width: 100, height: 100))
+        renderer.setInFlightMaster(nil, for: id)
+        #expect(renderer.inFlightMasterCount == 0)
+        await #expect(throws: StyleRenderer.RenderError.missingMaster) { _ = try await renderer.render(square) }
+    }
+
+    @Test func anInFlightMasterIsMeasuredAgainWhenItChanges() async throws {
+        let renderer = self.renderer(nil)
+        let puffy = request(points: CGSize(width: 60, height: 60), style: .puffy)
+        renderer.setInFlightMaster(Masters.disc(diameter: 120), for: id)
+        _ = try await renderer.render(puffy)
+        renderer.setInFlightMaster(Masters.disc(diameter: 120), for: id)
+        _ = try await renderer.render(puffy)
+        #expect(renderer.inscribedMeasurementCount == 2)
+    }
 }
 
 /// A thread-safe one-way flag for checking which thread a closure ran on.
