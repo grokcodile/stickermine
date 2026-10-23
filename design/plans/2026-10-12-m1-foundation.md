@@ -1435,7 +1435,7 @@ git commit -m "Record the first CI dry run" -m "Co-Authored-By: Claude Opus 5.5 
 - Consumes: `SourceFiles` (Task 2).
 - Produces (contract names):
 
-```swift
+```text
 @MainActor enum PanelPolicy {
     static var stickerLevel: NSWindow.Level { get }                       // desktopIcon + 1
     static let floatingLevel: NSWindow.Level                              // .floating
@@ -1692,7 +1692,7 @@ git commit -m "Add PanelPolicy and StickerPanel" -m "Co-Authored-By: Claude Opus
 - Consumes: `StickerPanel.isEditing` (Task 6).
 - Produces:
 
-```swift
+```text
 struct LayerShadow: Equatable {
     var radius: CGFloat; var opacity: Float; var offset: CGFloat           // points; offset is downward
     var margin: CGFloat { get }                                            // ceil(3 × radius) + |offset|
@@ -3159,9 +3159,9 @@ Expected: `Test run with 32 tests in 7 suites passed` and `** TEST SUCCEEDED **`
 
 - [ ] **Step 3: Update the index's Interface Contract and Global Constraints**
 
-In `design/plans/2026-10-12-stickermine-v1-plan.md`, replace the whole code block under `### Stickers (M1 spike → M2/M3/M5)` (from the line `@MainActor enum PanelPolicy {` to the closing `}` of `StickerManager`) with:
+In `design/plans/2026-10-12-stickermine-v1-plan.md`, replace the whole code block under `### Stickers (M1 spike → M2/M3/M5)` (from the line `@MainActor enum PanelPolicy {` to the closing `}` of `StickerManager`) with (it goes inside the index's existing swift fence; it is fenced as text here only because it lists declarations rather than compilable code):
 
-```swift
+```text
 @MainActor enum PanelPolicy {
     static var stickerLevel: NSWindow.Level { get }             // desktopIcon + 1
     static let floatingLevel: NSWindow.Level                    // .floating (Float on top)            [M1]

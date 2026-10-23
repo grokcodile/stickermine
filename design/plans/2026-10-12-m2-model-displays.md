@@ -4761,7 +4761,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 Open `design/spike-results.md` and read its **Decisions** table (filled in M1 Tasks 11–12):
 
 1. "Do panels go stale, and does a rebuild fix it?" If the outcome says panels went stale and the rebuild fixed it, change `static let rebuildsPanelsAfterSystemEvents = false` to `static let rebuildsPanelsAfterSystemEvents = true` in `Stickermine/Stickers/StickerManager.swift`. Otherwise leave it `false`.
-2. "Alpha click-through works, or the fallback mode becomes the default?" If the outcome says the fallback becomes the default, change `static let clickThroughFallbackByDefault = false` to `static let clickThroughFallbackByDefault = true` in `Stickermine/App/AppDelegate.swift`. Otherwise leave it `false`.
+2. "Alpha click-through works, or the fallback mode becomes the default?" If the outcome says the fallback becomes the default, change `static let clickThroughFallbackByDefault = false` to `static let clickThroughFallbackByDefault = true` in `Stickermine/App/AppDelegate.swift`. Otherwise leave it `false`. M4 Task 17 and M6 Tasks 1 and 14 rewrite this line; each of them keeps the value chosen here.
 3. "Stage Manager supported as is?" and rows 23–26 (Show Desktop, Mission Control). If any of them failed, stop and ask Ethan before going on: the fixes the spike table suggests (`.canJoinAllApplications`, `.transient` for floated stickers) change the collection behaviour that spec section 9 fixes and `PanelPolicyTests.stickerBehaviorIsExactlyTheSpecSet` pins, so they are a spec change for him to decide. If they passed, nothing changes.
 
 Step 9 writes the two values into the commit message.

@@ -72,7 +72,7 @@ Milestone-specific failure modes:
 | `design/site-checks.md` | Create (Task 7) | The page in a browser at desktop and phone widths, with results |
 | `/Users/ethan/Developer/homebrew-tap/Casks/stickermine.rb`, `/Users/ethan/Developer/homebrew-tap/README.md` | Create / modify (Task 8, Ethan's yes) | The cask and the tap's app list |
 | `design/release-checklist.md` | Create (Task 9); filled in Tasks 9–11 | Every release's steps and the record of each |
-| `design/README.md` | Modify (Task 9) | Lists the new scripts and records |
+| `design/README.md` | Modify (Task 9) | Lists every milestone's scripts and records, the brief, the spec and the plans |
 | `Info.plist` | Modify (Task 9) | Dev version `1.1`, ahead of `v1.0` |
 | `design/ci-dry-runs.md` | Modify (Tasks 10, 11) | Append the dry-run rows |
 | `design/app-shell-checks.md` | Modify (Task 10) | Row 26's result against the release |
@@ -888,7 +888,7 @@ git commit -m "Add the website's images and the script that makes them" -m "Co-A
 - Test: `StickermineTests/ReadmeTests.swift`
 
 **Interfaces:**
-- Consumes: `RepoFiles` (Task 1); `Updater.caskName: String`, `Updater.dmgURL: URL` (M6); `AboutLinks.website: URL` (M6); `Shortcut.defaultCapture: Shortcut` and `var label: String { get }` (M4); `SettingsText.shortcutTitle`, `.menuBarTitle`, `.loginTitle`, `.sharingTitle`, `.screenRecordingTitle: String` (M6); `@MainActor enum TutorialArt { static let doubleClickText: String; static func shortcutText(for shortcut: Shortcut?) -> String }` (M6); `StickerStyle.allCases` (M2) and `extension StickerStyle { var displayName: String { get } }` (M4); the recorded results in `design/editing-checks.md` (M5) rows 15–16, `design/spike-results.md` (M1) rows 21, 22, 26, 28 and 29, and `design/capture-checks.md` (M4) rows 6 and 8.
+- Consumes: `RepoFiles` (Task 1); `Updater.caskName: String`, `Updater.dmgURL: URL` (M6); `AboutLinks.website: URL` (M6); `Shortcut.defaultCapture: Shortcut` and `var label: String { get }` (M4); `SettingsText.shortcutTitle`, `.menuBarTitle`, `.loginTitle`, `.sharingTitle`, `.screenRecordingTitle: String` (M6); `@MainActor enum TutorialArt { static let doubleClickText: String; static func shortcutText(for shortcut: Shortcut?) -> String }` (M6); `StickerStyle.allCases` (M2) and `extension StickerStyle { var displayName: String { get } }` (M4); the recorded results in `design/editing-checks.md` (M5) rows 15–16, `design/spike-results.md` (M1) rows 21, 22, 26, 28 and 29, and `design/capture-checks.md` (M4) rows 6, 8 and 26.
 - Produces: `README.md`, the user guide. Its local links point at `docs/icon.png` and `docs/demo-still.jpg` (Task 3), `LICENSE` (M1), `PRIVACY.md` and `CONTACT.md` (Task 1); `ReadmeTests.everyLocalLinkPointsAtAFileThatExists` checks that each exists.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1077,7 +1077,7 @@ This builds Stickermine, installs it to `/Applications` and launches it. Without
 
 - **macOS 26 or later**, on an **Apple Silicon** Mac.
 - **Screen Recording permission.** macOS asks for it before any app can open the screenshot crosshair, even though Stickermine only ever sees the area you drag over. Stickermine never asks at launch: the first time you make a sticker, a small panel explains it, and **Continue** brings up macOS's own request. After that, the panel offers **Open System Settings** (Privacy & Security › Screen & System Audio Recording). If you've just turned it on and the panel is still there, click **Relaunch Stickermine**. Home's settings always show whether it's on.
-- **macOS checks in from time to time.** On your first sticker, and every so often after that, macOS shows an alert that Stickermine "is requesting to bypass the system private window picker". That is macOS confirming the Screen Recording permission, not something Stickermine shows. It can appear on top of the sticker picker: answer it, and the picker is still there, waiting for you to choose a style.
+- **macOS checks in from time to time.** On your first sticker, and every so often after that, macOS shows an alert that Stickermine "is requesting to bypass the system private window picker". That is macOS confirming the Screen Recording permission, not something Stickermine shows. It can appear on top of the sticker picker: answer it, and the picker is still there, waiting for you to choose a style. After a capture, macOS may also show Stickermine in Control Center's screen-recording indicator for a moment.
 
 ## First run
 
@@ -1164,7 +1164,7 @@ Built by **Ethan Darling** — [@grokcodile](https://github.com/grokcodile) on G
 
 - [ ] **Step 4: Match the README to what the manual checks recorded**
 
-The text above assumes every check it describes passed. Read the Result cells of `design/editing-checks.md` rows 15 (Pinch) and 16 (Trackpad rotate), `design/spike-results.md` rows 21 (every desktop Space), 22 (not on full-screen Spaces), 26 (Mission Control), 28 and 29 (Stage Manager), and `design/capture-checks.md` rows 6 (granting) and 8 (the system alert on the picker). Then apply exactly the cases that match; with every row passed, change nothing.
+The text above assumes every check it describes passed. Read the Result cells of `design/editing-checks.md` rows 15 (Pinch) and 16 (Trackpad rotate), `design/spike-results.md` rows 21 (every desktop Space), 22 (not on full-screen Spaces), 26 (Mission Control), 28 and 29 (Stage Manager), and `design/capture-checks.md` rows 6 (granting), 8 (the system alert on the picker) and 26 (Control Center indicator). Then apply exactly the cases that match; with every row passed, and row 26 recording Stickermine in the indicator for a moment, change nothing.
 
 (a) Row 15 passed and row 16 didn't (`no rotate`, or anything other than the Expected cell):
 
@@ -1218,6 +1218,20 @@ PY
 If that row's Decision cell in `design/spike-results.md` records a different limit than this sentence states, show Ethan both and use the wording he approves instead of `new`.
 
 (e) Rows 21, 22 and 26 drove M2's window settings, and row 8 drove M4's picker; they should all read as passed by now. If any of them doesn't (for example row 8 says the picker closed when the alert was clicked), don't guess: stop, show Ethan the row and the README sentence it backs ("on every desktop Space" and "They join every desktop Space but stay off full-screen apps, and they stay put through Mission Control." for rows 21, 22 and 26; "answer it, and the picker is still there" for row 8), and write the sentence he approves. Row 6 needs nothing: the README's "If you've just turned it on and the panel is still there, click **Relaunch Stickermine**" holds whichever way it went.
+
+(f) `design/capture-checks.md` row 26 (Control Center indicator; not spike-results row 26) doesn't record Stickermine in Control Center's screen-recording indicator (its Result says Stickermine wasn't listed, or `not run: <reason>`). Like the pinch line, the sentence stays only if the check saw it:
+
+```bash
+python3 -I - <<'PY'
+path = "README.md"
+text = open(path, encoding="utf-8").read()
+old = " After a capture, macOS may also show Stickermine in Control Center's screen-recording indicator for a moment."
+assert text.count(old) == 1, "the Control Center sentence is not as Task 4 wrote it"
+open(path, "w", encoding="utf-8").write(text.replace(old, ""))
+PY
+```
+
+If that capture-checks row saw Stickermine listed for longer than a moment (for example until the sticker was placed, or until Stickermine quit), keep the sentence but show Ethan the row and the sentence, and replace "for a moment" with the wording he approves.
 
 - [ ] **Step 5: Run the tests**
 
@@ -2512,7 +2526,7 @@ How every Stickermine release goes out, and the record of each one (spec section
 | Release carrying the new About link | |
 ```
 
-`design/README.md` (complete file; the first bullet now points at the published page, and the new scripts and records are listed):
+`design/README.md` (complete file; the first bullet now points at the published page, and every milestone's scripts and records are listed, along with the brief, the spec and the plans):
 
 ```markdown
 # Stickermine design assets
@@ -2527,6 +2541,16 @@ How every Stickermine release goes out, and the record of each one (spec section
 - `check-site.sh`: checks `docs/index.html` and the repo's documents (structure, links; `--release` and `--publish` add the release gates, `--online` fetches every absolute link).
 - `site-checks.md`: the website checked in a browser at desktop and phone widths (M7), with each row's result.
 - `release-checklist.md`: the steps of every release, and the record of each one.
+- `stickermine-handoff.md`: the original product brief.
+- `specs/`: the approved design spec.
+- `plans/`: the implementation plan index and the M1–M7 milestone plans.
+- `ci-dry-runs.md`: every CI dry run of release.yml (M1–M7).
+- `spike-results.md`: the sticker-window spike (M1) and its decisions.
+- `display-checks.md`: displays, sleep, lock and mirroring on real hardware (M2).
+- `style-review.md`: the style gallery and live-sticker review (M3).
+- `capture-checks.md`: the capture flow and permissions on this Mac (M4).
+- `editing-checks.md`: editing and the 50-sticker check (M5).
+- `app-shell-checks.md`: launches, Home, login item, updater and first run (M6).
 ```
 
 ```bash

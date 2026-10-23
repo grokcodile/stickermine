@@ -5923,6 +5923,8 @@ git rm Stickermine/App/DebugMaple.swift StickermineTests/DebugMapleTests.swift
 
 - [ ] **Step 4: Implement**
 
+Before overwriting, run `grep -o 'clickThroughFallbackByDefault = [a-z]*' Stickermine/App/AppDelegate.swift`. The value M2 Task 12 Step 5 chose from `design/spike-results.md` must survive: if it prints `= true`, write `static let clickThroughFallbackByDefault = true` in the block below.
+
 `Stickermine/App/AppDelegate.swift` (complete file; it replaces M3's version: `applicationDidFinishLaunching` calls the new `startCapture()` after `startStickers()`, `applicationWillTerminate` cancels the session before flushing, `startStickers()` loses the `-debugPlaceMaple` lines and creates the `SessionCoordinator`, and `startCapture()` and `quit()` are new):
 
 ```swift
@@ -5944,8 +5946,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) static var didRunStartup = false
 
     /// From design/spike-results.md, Decisions: "Alpha click-through works, or
-    /// the fallback mode becomes the default?". The hidden `clickThroughFallback`
-    /// setting (spec section 12) overrides it either way.
+    /// the fallback mode becomes the default?" (keep the value M2 chose). The
+    /// hidden `clickThroughFallback` setting (spec section 12) overrides it either
+    /// way.
     static let clickThroughFallbackByDefault = false
 
     private let log = Logger(subsystem: "com.ethan.stickermine", category: "app")
@@ -6058,9 +6061,12 @@ Expected: `Test run with 289 tests in 36 suites passed` and `** TEST SUCCEEDED *
 
 - [ ] **Step 6: Commit**
 
+First run `grep -o 'clickThroughFallbackByDefault = [a-z]*' Stickermine/App/AppDelegate.swift` again: it must print what it printed before the overwrite in Step 4 (the value in M2 Task 12's commit message). If it doesn't, fix that line and rerun Step 5 before committing. The commit message records the value, as M2 Task 12 Step 9 does:
+
 ```bash
 git add Stickermine/App/AppDelegate.swift StickermineTests/AppDelegateTests.swift
-git commit -m "Wire the capture shortcut and the menu bar icon; remove the Maple debug path" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+FALLBACK=$(grep -o 'clickThroughFallbackByDefault = [a-z]*' Stickermine/App/AppDelegate.swift)
+git commit -m "Wire the capture shortcut and the menu bar icon; remove the Maple debug path" -m "Spike decision kept: ${FALLBACK}." -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -6129,10 +6135,11 @@ M4's capture flow (spec sections 5, 6, 7, 13 and 14) needs a person at the Mac: 
 | 23 | Busy capture | Capture a dense area (a grid of a dozen photos or icons). | Either several subjects or "No subject found"; Whole image works either way. | |
 | 24 | Visual Intelligence | In the crosshair, look for a Visual Intelligence hint or key. | Write down what is offered; if using it takes the selection elsewhere, the session ends without a HUD and the next ⌃⌥⌘S still works. | |
 | 25 | Another app's ⌃⌥⌘S | If any installed app uses ⌃⌥⌘S, press it there. | Write down which app and what happened (Stickermine is expected to take the chord). | |
-| 26 | Stickers in new captures | Capture an area that includes a placed sticker. | The sticker is not in the capture (stickers are hidden from screenshots by default). | |
-| 27 | What was saved | `cat "$LIB/library.json"`; `ls "$LIB/stickers"`; `sips -g pixelWidth -g dpiWidth "$LIB/stickers/"*.png`. | One entry per confirmed capture, with its `pixelWidth`, `pixelHeight`, `pixelsPerPoint` (2.0 on a Retina display) and `lastStyle` = the style picked; PNGs at 144 dpi on a Retina display; each placed sticker in its display's `placements`. | |
-| 28 | Relaunch | `pkill -x Stickermine; open /Applications/Stickermine.app`. | Every placed sticker comes back in place and style. | |
-| 29 | × in the picker | `grep -c '"lastStyle"' "$LIB/library.json"`; capture an object, then click the picker's × (top right); run the `grep` again; press ⌃⌥⌘S, then Esc. | The picker closes at once; no crash; the count is unchanged (cancelling saves nothing); the next ⌃⌥⌘S shows the crosshair. | |
+| 26 | Control Center indicator (spec 5.9) | Right after a capture, open Control Center and look at the screen-recording indicator. | Record whether Stickermine is listed and for how long. | |
+| 27 | Stickers in new captures | Capture an area that includes a placed sticker. | The sticker is not in the capture (stickers are hidden from screenshots by default). | |
+| 28 | What was saved | `cat "$LIB/library.json"`; `ls "$LIB/stickers"`; `sips -g pixelWidth -g dpiWidth "$LIB/stickers/"*.png`. | One entry per confirmed capture, with its `pixelWidth`, `pixelHeight`, `pixelsPerPoint` (2.0 on a Retina display) and `lastStyle` = the style picked; PNGs at 144 dpi on a Retina display; each placed sticker in its display's `placements`. | |
+| 29 | Relaunch | `pkill -x Stickermine; open /Applications/Stickermine.app`. | Every placed sticker comes back in place and style. | |
+| 30 | × in the picker | `grep -c '"lastStyle"' "$LIB/library.json"`; capture an object, then click the picker's × (top right); run the `grep` again; press ⌃⌥⌘S, then Esc. | The picker closes at once; no crash; the count is unchanged (cancelling saves nothing); the next ⌃⌥⌘S shows the crosshair. | |
 
 ## Outcome
 
@@ -6141,7 +6148,7 @@ Fill in after the run: which rows failed (if any), what was fixed, and the commi
 
 - [ ] **Step 2: Run the checks with Ethan**
 
-Ask Ethan to do the Setup and then rows 1–29 in order (5b right after 5). For each row write in Result exactly what he reports, plus the named log lines from the `log stream` terminal. A row that can't be run gets `not run: <reason>`.
+Ask Ethan to do the Setup and then rows 1–30 in order (5b right after 5). For each row write in Result exactly what he reports, plus the named log lines from the `log stream` terminal. A row that can't be run gets `not run: <reason>`.
 
 - [ ] **Step 3: Fix failures before moving on**
 
@@ -6438,4 +6445,4 @@ Push only with Ethan's yes (`git push`).
 
 - **M5** gates double-click editing on the session: while `SessionCoordinator.isActive`, double-clicks on stickers don't enter editing (spec section 5.2); give the editor a `() -> Bool` that AppDelegate fills with `{ session.isActive }`. Starting a session already calls `stickers.endEditing(discardGesture: true)`, so M5's real gesture teardown runs there. The toolbar pill's Style row can reuse `StickerStyle.displayName` and `PreviewHost` (a `StickerView` behind a click-transparent container) with renders through the same `StyleRenderer`.
 - **M6** stores the shortcut: `Shortcut`'s `CodingKeys` are already `k` and `m` (spec 12's `captureShortcut`). `AppDelegate.startCapture()` then registers the stored value (or nothing when cleared) instead of `Shortcut.defaultCapture` and calls `statusItem.setShortcut(_:)`; the recorder calls `hotkeys.suspend()`/`resume()`. `StatusItemController.makeMenu` gets **Open Stickermine…** between New Sticker and the separator (spec 13's order) and hiding uses the status item's `isVisible`. Home's New Sticker calls `session.startCapture(orderingOut: homeWindow)`; a history-grid click calls `session.startReplace(sticker:)`; Delete from History calls `session.cancel()` first when `session.currentSticker` is that sticker; the support-ask counter uses `session.onPlaced` (skipping tutorial stickers); `AppDelegate` sets `session.onActiveChange` for the status item, so Home must chain onto it, not replace it. The updater calls `session.cancel()` (it terminates `screencapture` and deletes its file) and `library.flush()` before spawning its helper. Home re-checks Screen Recording when it becomes key (spec 14) and can show the same `PermissionPanel`; `Settings.register(in:)` includes `PermissionPanel.didRequestKey`.
-- **M7**'s README and PRIVACY describe the Screen Recording permission and the periodic system alert, using what `design/capture-checks.md` rows 3–8 recorded.
+- **M7**'s README and PRIVACY describe the Screen Recording permission and the periodic system alert, using what `design/capture-checks.md` rows 3–8 recorded, and the README mentions that a capture can list Stickermine in Control Center's screen-recording indicator (spec 5.9), as row 26 recorded.
