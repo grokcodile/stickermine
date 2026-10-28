@@ -43,7 +43,7 @@ struct ClickThroughFallbackTests {
             [ClickThroughFallback.Target(panel: front, contentRect: rect, mask: leftHalf, wholeFrame: false),
              ClickThroughFallback.Target(panel: back, contentRect: rect.offsetBy(dx: 100, dy: 0), mask: leftHalf,
                                          wholeFrame: false)]
-        })
+        }, buttonsDown: { false })
         fallback.prepare(front)
         fallback.prepare(back)
         #expect(front.ignoresMouseEvents && back.ignoresMouseEvents)
@@ -62,5 +62,25 @@ struct ClickThroughFallbackTests {
         fallback.update(at: CGPoint(x: 41_000, y: 50))
         #expect(front.ignoresMouseEvents && back.ignoresMouseEvents)
         #expect(fallback.activePanel == nil)
+    }
+
+    @Test func nothingSwitchesWhileAButtonIsHeld() {
+        let panel = PanelPolicy.makeStickerPanel(contentRect: rect)
+        defer { panel.close() }
+        var held = false
+        let fallback = ClickThroughFallback(targets: { [panel, rect, leftHalf] in
+            [ClickThroughFallback.Target(panel: panel, contentRect: rect, mask: leftHalf, wholeFrame: false)]
+        }, buttonsDown: { held })
+        fallback.prepare(panel)
+        fallback.update(at: CGPoint(x: 40_050, y: 50))
+        #expect(!panel.ignoresMouseEvents)
+        // A drag (the corner knob) leaves the sticker: it keeps the mouse until the button is up.
+        held = true
+        fallback.update(at: CGPoint(x: 41_000, y: 50))
+        #expect(!panel.ignoresMouseEvents)
+        #expect(fallback.activePanel === panel)
+        held = false
+        fallback.update(at: CGPoint(x: 41_000, y: 50))
+        #expect(panel.ignoresMouseEvents)
     }
 }

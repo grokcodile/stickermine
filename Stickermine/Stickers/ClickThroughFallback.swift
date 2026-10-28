@@ -28,11 +28,15 @@ final class ClickThroughFallback {
 
     /// Targets front to back.
     private let targets: () -> [Target]
+    private let buttonsDown: () -> Bool
     private var monitors: [Any] = []
     private(set) weak var activePanel: NSPanel?
 
-    init(targets: @escaping () -> [Target]) {
+    /// `buttonsDown` reports whether a mouse button is held (by default
+    /// `NSEvent.pressedMouseButtons`; tests pass their own).
+    init(targets: @escaping () -> [Target], buttonsDown: (() -> Bool)? = nil) {
         self.targets = targets
+        self.buttonsDown = buttonsDown ?? { NSEvent.pressedMouseButtons != 0 }
     }
 
     /// Every sticker panel starts out ignoring the mouse. Its view also gets an
@@ -76,8 +80,11 @@ final class ClickThroughFallback {
     }
 
     /// Lets the front-most sticker with an opaque pixel under `point` take the
-    /// mouse, and every other sticker ignore it.
+    /// mouse, and every other sticker ignore it. Nothing switches while a
+    /// button is held: a drag (moving a sticker, its corner knob) stays with
+    /// the sticker that took the mouse-down, even when the cursor leaves it.
     func update(at point: NSPoint) {
+        guard !buttonsDown() else { return }
         let current = targets()
         let candidates = current.map {
             Candidate(contentRect: $0.contentRect, frame: $0.panel.frame, mask: $0.mask, wholeFrame: $0.wholeFrame)
