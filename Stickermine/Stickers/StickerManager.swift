@@ -53,6 +53,19 @@ final class StickerManager {
         let display: DisplayInfo
     }
 
+    /// How a gesture or a drag holds a panel's frame.
+    enum FrameHold: Equatable {
+        /// Nothing in progress: reconciles and renders apply frames as usual.
+        case none
+        /// A gesture or a drag is in progress: the window keeps the frame the
+        /// editor gives it (a gesture's grown square, a drag's position), and a
+        /// finished render waits until it ends.
+        case live
+        /// A gesture ended and was written: the window stays as it is until
+        /// the new bitmap arrives, then shrinks and the transform resets.
+        case settling
+    }
+
     private final class Entry {
         let panel: StickerPanel
         let view: StickerView
@@ -61,7 +74,12 @@ final class StickerManager {
         var layout: StickerGeometry.Layout?
         /// The newest render asked for; a result for any other request is dropped.
         var request: RenderRequest?
+        /// The request whose bitmap is showing.
+        var shownRequest: RenderRequest?
         var alphaMask: AlphaMask?
+        var hold: FrameHold = .none
+        /// The newest render, finished during a gesture.
+        var pendingRender: RenderedSticker?
 
         init(panel: StickerPanel, view: StickerView) {
             self.panel = panel
@@ -247,15 +265,26 @@ final class StickerManager {
     /// Shows a finished render if it is still the newest one asked for and its
     /// placement still exists, with the layer shadow for the sticker's
     /// on-screen size; the frame then grows by the shadow margin around the
-    /// same centre (spec section 9).
+    /// same centre (spec section 9). During a gesture the render waits for
+    /// the gesture's end; a gesture that is settling shows it, resets the
+    /// transform and shrinks the window in the same step.
     func commitRender(_ rendered: RenderedSticker, for request: RenderRequest, placement id: UUID) {
         let model = library.library
         guard let entry = entries[id], entry.request == request, model.placement(id) != nil else { return }
-        let sourceLongSide = model.sticker(request.sticker).map { Double(max($0.pixelWidth, $0.pixelHeight)) } ?? 0
-        entry.view.show(rendered, shadow: request.onScreenParameters(sourceLongSide: sourceLongSide),
-                        style: request.style)
-        entry.alphaMask = rendered.alphaMask
-        if let layout = entry.layout { applyFrame(entry, layout: layout) }
+        switch entry.hold {
+        case .live:
+            entry.pendingRender = rendered
+        case .settling:
+            // One transaction: the baked bitmap never shows with the gesture's transform still on it.
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            show(rendered, for: request, in: entry)
+            settle(entry)
+            CATransaction.commit()
+        case .none:
+            show(rendered, for: request, in: entry)
+            if let layout = entry.layout { applyFrame(entry, layout: layout) }
+        }
     }
 
     /// A panel's backing scale changed (`windowDidChangeBackingProperties`):
@@ -400,6 +429,7 @@ final class StickerManager {
             fresh.displayUUID = old.displayUUID
             fresh.layout = old.layout
             fresh.request = old.request
+            fresh.shownRequest = old.shownRequest
             fresh.alphaMask = old.alphaMask
             if let contents {
                 fresh.view.showContents(contents, pointSize: pointSize, shadow: shadow, frameMargin: margin)
@@ -481,12 +511,19 @@ final class StickerManager {
             return pending.app
         }
         let id = editor.placementID
+        if !discardGesture, editor.isGestureActive {
+            commitGesture(placement: id, scaleFactor: editor.scaleFactor, rotationDelta: editor.rotationDelta)
+        }
         self.editor = nil
         editor.tearDown()
         if let entry = entries[id] {
             entry.panel.isEditing = false
             entry.view.setEditingChrome(false)
-            if let layout = entry.layout { applyFrame(entry, layout: layout) }
+            if entry.hold != .none {
+                settle(entry)
+            } else if let layout = entry.layout {
+                applyFrame(entry, layout: layout)
+            }
         }
         // In the fallback click-through mode the panel gives the mouse back at
         // once if the cursor is over its transparent margin.
@@ -512,6 +549,59 @@ final class StickerManager {
         return EditTarget(placement: placement, natural: sticker.naturalPointSize,
                           sourceLongSide: Double(max(sticker.pixelWidth, sticker.pixelHeight)),
                           layout: layout, display: display)
+    }
+
+    /// A gesture or a drag begins: reconciles and renders leave the panel's
+    /// frame alone until it ends. False while another one runs or a gesture
+    /// is still settling.
+    func holdFrame(for id: UUID) -> Bool {
+        guard let entry = entries[id], entry.hold == .none else { return false }
+        entry.hold = .live
+        return true
+    }
+
+    /// How a gesture or a drag holds the panel (tests and logs).
+    func frameHold(for id: UUID) -> FrameHold {
+        entries[id]?.hold ?? .none
+    }
+
+    /// The newest render asked for the placement (tests and logs).
+    func renderRequest(for id: UUID) -> RenderRequest? {
+        entries[id]?.request
+    }
+
+    /// A scale or rotate gesture ended: writes `poses[size]` with the new
+    /// scale (and the centre settled inside the display) and the new rotation,
+    /// then renders. The window keeps its square and the transform until the
+    /// new bitmap is shown (spec section 10, "At gesture end"). A gesture that
+    /// changed nothing writes nothing.
+    func commitGesture(placement id: UUID, scaleFactor: Double, rotationDelta: Double) {
+        guard let entry = entries[id] else { return }
+        let changed = abs(scaleFactor - 1) > 1e-9 || abs(rotationDelta) > 1e-9
+        guard changed, !library.isReadOnly, let target = editTarget(for: id) else {
+            settle(entry)
+            return
+        }
+        let scale = target.layout.pose.scale * scaleFactor
+        let rotation = EditGeometry.normalized(target.placement.rotation + rotationDelta)
+        let pointSize = CGSize(width: target.natural.width * CGFloat(scale),
+                               height: target.natural.height * CGFloat(scale))
+        let box = StickerGeometry.boundingSize(of: pointSize, rotation: rotation)
+        let center = EditGeometry.settledCenter(
+            CGPoint(x: target.layout.stickerRect.midX, y: target.layout.stickerRect.midY), boxSize: box,
+            frame: target.display.frame, visibleFrame: target.display.visibleFrame)
+        let pose = StickerGeometry.pose(center: center, scale: scale, in: target.display.frame)
+        _ = recordKeyForUserEdit(on: target.display)
+        library.mutate { library in
+            library.updatePlacement(id) { placement in
+                placement = LayoutResolver.writing(pose, to: placement, at: target.display.size)
+                placement.rotation = rotation
+            }
+        }
+        entry.hold = .settling
+        refreshPanel(for: id)
+        // Nothing new to render (the same request): settle at once.
+        if entry.hold == .settling, entry.request == entry.shownRequest { settle(entry) }
     }
 
     /// Style from the toolbar pill: the placement's style and its sticker's
@@ -572,6 +662,18 @@ final class StickerManager {
         guard let pending = deferredFocusReturn else { return }
         deferredFocusReturn = nil
         focus.returnFocus(to: pending.app)
+    }
+
+    /// The gesture's bitmap is showing (or there is none to wait for): the
+    /// transform resets, the window shrinks to the padded box, and the pill
+    /// follows.
+    private func settle(_ entry: Entry) {
+        entry.hold = .none
+        entry.view.setContentTransform(scale: 1, rotation: 0)
+        if let pending = entry.pendingRender, let request = entry.request {
+            show(pending, for: request, in: entry)
+        }
+        if let layout = entry.layout { applyFrame(entry, layout: layout) }
     }
 
     // MARK: System events
@@ -733,8 +835,10 @@ final class StickerManager {
     /// The window: the shown bitmap's box (an Outline or Puffy rim included;
     /// the sticker rect before the first render) centred on the sticker rect,
     /// plus the shadow margin on every side (at least the editing margin while
-    /// editing), backing-aligned (spec section 9). The pill follows.
+    /// editing), backing-aligned (spec section 9). A gesture or a drag holds
+    /// the frame.
     private func applyFrame(_ entry: Entry, layout: StickerGeometry.Layout) {
+        guard entry.hold == .none else { return }
         let margin = entry.view.windowMargin
         let content = entry.view.contentPointSize
         let size = content.width > 0 && content.height > 0 ? content : layout.stickerRect.size
@@ -748,6 +852,17 @@ final class StickerManager {
         if let editor, editor.placementID == entry.panel.placementID { editor.placePill() }
     }
 
+    /// Shows a rendered bitmap with the layer shadow for its on-screen size.
+    private func show(_ rendered: RenderedSticker, for request: RenderRequest, in entry: Entry) {
+        let model = library.library
+        let sourceLongSide = model.sticker(request.sticker).map { Double(max($0.pixelWidth, $0.pixelHeight)) } ?? 0
+        entry.view.show(rendered, shadow: request.onScreenParameters(sourceLongSide: sourceLongSide),
+                        style: request.style)
+        entry.alphaMask = rendered.alphaMask
+        entry.shownRequest = request
+        entry.pendingRender = nil
+    }
+
     private func requestRender(_ entry: Entry, placement: Placement, layout: StickerGeometry.Layout,
                                backingScale: CGFloat) {
         let request = RenderRequest(sticker: placement.sticker, style: placement.style, flipped: placement.flipped,
@@ -755,6 +870,7 @@ final class StickerManager {
                                     backingScale: backingScale)
         guard request != entry.request else { return }
         entry.request = request
+        entry.pendingRender = nil
         renderRequestsIssued += 1
         let renderer = self.renderer
         let placementID = placement.id
@@ -764,8 +880,16 @@ final class StickerManager {
                 self?.commitRender(rendered, for: request, placement: placementID)
             } catch {
                 self?.log.error("render of \(placementID.uuidString, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+                self?.renderFailed(request, placement: placementID)
             }
         }
+    }
+
+    /// A failed render never leaves a gesture's window grown: it settles with
+    /// the bitmap it has.
+    private func renderFailed(_ request: RenderRequest, placement id: UUID) {
+        guard let entry = entries[id], entry.request == request, entry.hold == .settling else { return }
+        settle(entry)
     }
 
     /// A returning recorded display refreshes its lastSeen and name in memory;
