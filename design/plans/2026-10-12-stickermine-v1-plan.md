@@ -290,7 +290,13 @@ struct LayerShadow: Equatable {                                 // points; margi
     let hitPadLayer: CALayer; let outlineLayer: CAShapeLayer    // editing chrome                      [M1]
     var onDoubleClick: (() -> Void)?
     var onKeyDown: ((NSEvent) -> Bool)?; var onMagnify: ((NSEvent) -> Void)?           //              [M1]
-    var onRotate: ((NSEvent) -> Void)?; var onDragEnded: (() -> Void)?                 //              [M1]
+    var onRotate: ((NSEvent) -> Void)?                                                  // [M1]; [M5] onDragEnded removed, see onMoveDrag
+    enum DragPhase: Equatable { case began, moved, ended }; enum DragKind: Equatable { case knob, move }   // [M5]
+    let knobLayer: CAShapeLayer; private(set) var knobCenter: CGPoint; private(set) var trackedDrag: DragKind?   // [M5] the knob sits on the outline's bottom-right corner
+    var onInactiveMouseDown: (() -> Void)?                                              // [M5] every mouse-down while not editing
+    var onMoveDrag: ((DragPhase, CGPoint) -> Void)?; var onKnobDrag: ((DragPhase, CGPoint, Bool) -> Void)?   // [M5] screen points; Bool = Shift; no performDrag
+    static let outlineOutset: CGFloat; static let knobRadius: CGFloat; static let knobHitRadius: CGFloat; static let editingMargin: CGFloat   // [M5] 2, 7, 12, 14
+    var windowMargin: CGFloat { get }; func isOnKnob(_ point: CGPoint) -> Bool           // [M5] at least editingMargin while editing
     private(set) var contentPointSize: CGSize; private(set) var layerShadow: LayerShadow?          //  [M1]
     private(set) var contentScale: CGFloat; private(set) var contentRotation: CGFloat              //  [M1]
     private(set) var isShowingEditingChrome: Bool; static let hitPadAlpha: CGFloat                 //  [M1]
@@ -315,7 +321,7 @@ extension AppDelegate {                                         // test-host gua
 }
 @MainActor final class StickerManager {
     init(library: LibraryController, screens: ScreenProvider, renderer: StyleRenderer,
-         reconcileDelay: TimeInterval = 0.45)                   // [M2] reconcileDelay (tests)
+         reconcileDelay: TimeInterval = 0.45, focus: EditingFocus? = nil)   // [M2] reconcileDelay (tests); [M5] focus (nil: LiveEditingFocus)
     func restoreAll()
     func scheduleReconcile()                                    // 450 ms debounce
     func reconcileNow()
@@ -325,8 +331,9 @@ extension AppDelegate {                                         // test-host gua
     func deleteSticker(_ sticker: UUID)
     func panel(for placement: UUID) -> StickerPanel?
     func setSharingHidden(_ hidden: Bool)                       // turning hiding off recreates the panels that stay hidden
-    var editingPlacement: UUID? { get }
-    func endEditing(discardGesture: Bool)
+    var editingPlacement: UUID? { get }                         // [M5] editor?.placementID
+    func endEditing(discardGesture: Bool)                       // [M5] true: a gesture or drag in progress is discarded; hands focus back
+    @discardableResult func endEditing(discardGesture: Bool, returningFocus: Bool) -> NSRunningApplication?   // [M5] false: returns the app instead (a session takes over)
     static let rebuildsPanelsAfterSystemEvents: Bool            // [M2] from the spike results
     static let systemEventRecheckDelay: TimeInterval            // [M2] 1.5
     struct DisplaySnapshot: Equatable { let frame: CGRect; let backingScale: CGFloat; let inMirrorSet: Bool }   // [M2]
@@ -343,6 +350,16 @@ extension AppDelegate {                                         // test-host gua
     func handleDisplayRemoved(displayID: UInt32)                // [M2]
     static func recordAssignments(displays: [DisplayInfo], records: [String: DisplayRecord]) -> [String: String]   // [M2]
     static func display(containing point: NSPoint, in displays: [DisplayInfo]) -> DisplayInfo?   // [M2]
+    struct EditTarget { let placement: Placement; let natural: CGSize; let sourceLongSide: Double; let layout: StickerGeometry.Layout; let display: DisplayInfo }   // [M5]
+    enum FrameHold: Equatable { case none, live, settling }    // [M5] live: a gesture or drag holds the frame; settling: waiting for the baked bitmap
+    private(set) var editor: StickerEditor?; var isSessionActive: () -> Bool   // [M5] AppDelegate: { session.isActive }
+    func beginEditing(placement id: UUID)                       // [M5] double-click: bring to front (saved), chrome, pill, key and active
+    func display(at point: NSPoint) -> DisplayInfo?; func editTarget(for id: UUID) -> EditTarget?   // [M5]
+    func holdFrame(for id: UUID) -> Bool; func frameHold(for id: UUID) -> FrameHold; func renderRequest(for id: UUID) -> RenderRequest?   // [M5]
+    func commitGesture(placement id: UUID, scaleFactor: Double, rotationDelta: Double)   // [M5] poses[size] (clamped) + rotation, then settles on the new bitmap
+    func commitDrag(placement id: UUID)                         // [M5] same display: poses[size]; another: a placement there, on top, same size
+    func setStyle(_ style: StickerStyle, for id: UUID); func toggleFlip(for id: UUID); func toggleOnTop(for id: UUID)   // [M5] the pill
+    func scheduleRemoval(of id: UUID); func systemWillSleepOrLock(); func updateClickThrough(at point: NSPoint)   // [M5] Delete; sleep and lock; fallback mode
 }
 enum StickerGeometry {                                          // [M2] pure pose ↔ screen geometry
     static let reachableInset: CGFloat                          // 8
@@ -357,11 +374,59 @@ enum StickerGeometry {                                          // [M2] pure pos
 @MainActor final class ClickThroughFallback {                   // [M2] the only writer of ignoresMouseEvents
     struct Target { let panel: NSPanel; let contentRect: CGRect; let mask: AlphaMask?; let wholeFrame: Bool }
     struct Candidate { let contentRect: CGRect; let frame: CGRect; let mask: AlphaMask?; let wholeFrame: Bool }
-    init(targets: @escaping () -> [Target]); func prepare(_ panel: NSPanel); func forget(_ panel: NSPanel)
+    init(targets: @escaping () -> [Target], buttonsDown: (() -> Bool)? = nil); func prepare(_ panel: NSPanel); func forget(_ panel: NSPanel)   // [M5] nothing switches while a button is held
     func start(); func stop(); func update(at point: NSPoint); private(set) weak var activePanel: NSPanel?
     nonisolated static func hitIndex(at p: CGPoint, in candidates: [Candidate]) -> Int?
 }
 extension AppDelegate { static let clickThroughFallbackByDefault: Bool }   // [M2] from the spike results
+enum EditGeometry {                                             // [M5] pure editing math (Stickers/EditGeometry.swift)
+    static let snapStep: Double; static let minimumLongSide: Double; static let gestureHeadroom: Double   // 15°, 48 pt, 2
+    struct KnobChange: Equatable { let scale: Double; let rotation: Double }
+    static func normalized(_ angle: Double) -> Double; static func snapped(_ angle: Double, step: Double = snapStep) -> Double
+    static func knobChange(from start: CGVector, to current: CGVector, baseRotation: Double, snap: Bool) -> KnobChange
+    static func scaleLimits(natural: CGSize, displaySize: CGSize) -> ClosedRange<Double>
+    static func clampedScale(_ proposed: Double, current: Double, limits: ClosedRange<Double>) -> Double
+    static func settledCenter(_ center: CGPoint, boxSize: CGSize, frame: CGRect, visibleFrame: CGRect) -> CGPoint
+    static func gestureSide(contentSize: CGSize, factor: Double, margin: CGFloat) -> CGFloat
+}
+extension Library {                                             // [M5] Model/LibraryEditing.swift; false and no change when unknown or already so
+    @discardableResult mutating func bringToFront(_ id: UUID) -> Bool
+    @discardableResult mutating func updatePlacement(_ id: UUID, _ change: (inout Placement) -> Void) -> Bool
+    @discardableResult mutating func movePlacement(_ id: UUID, toDisplay key: String) -> Bool
+    @discardableResult mutating func restyle(_ id: UUID, to style: StickerStyle) -> Bool   // also the sticker's lastStyle
+}
+@MainActor protocol EditingFocus: AnyObject {                   // [M5] Stickers/StickerEditor.swift
+    func frontmostOtherApp() -> NSRunningApplication?; func takeFocus(for panel: NSPanel); func returnFocus(to app: NSRunningApplication?)
+}
+@MainActor final class LiveEditingFocus: EditingFocus { init() }   // [M5] activate + make key; hand back on the next turn, only while still active
+@MainActor final class StickerEditor {                          // [M5] the sticker being edited
+    enum Gesture: Hashable { case knob, magnify, rotate }
+    let placementID: UUID; let panel: StickerPanel; let view: StickerView; let previousApp: NSRunningApplication?; let pill: ToolbarPill
+    init(placementID: UUID, panel: StickerPanel, view: StickerView, previousApp: NSRunningApplication?,
+         target: StickerManager.EditTarget, renderer: StyleRenderer, manager: StickerManager)
+    private(set) var activeGestures: Set<Gesture>; private(set) var scaleFactor: Double; private(set) var rotationDelta: Double
+    private(set) var gestureResizeCount: Int; private(set) var dragOffset: CGVector?; var isGestureActive: Bool { get }; var isDragging: Bool { get }
+    func show(); func tearDown(); func keyDown(_ event: NSEvent) -> Bool
+    func drag(_ phase: StickerView.DragPhase, at point: CGPoint)
+    func magnify(by amount: Double, phase: NSEvent.Phase); func rotate(byDegrees degrees: Double, phase: NSEvent.Phase)
+    func knob(_ phase: StickerView.DragPhase, at point: CGPoint, snapping: Bool)
+    func placePill(); func placementDidChange()
+}
+@MainActor final class ToolbarPillModel: ObservableObject {     // [M5] Stickers/ToolbarPill.swift
+    static let previewBox: CGSize                                // 40 × 40
+    @Published private(set) var style: StickerStyle, flipped: Bool, onTop: Bool, showsStyles: Bool, previews: [StickerStyle: PickerModel.Preview]
+    var onStyle: ((StickerStyle) -> Void)?; var onFlip: (() -> Void)?; var onFloatOnTop: (() -> Void)?; var onRemove: (() -> Void)?
+    init(placement: Placement, natural: CGSize, sourceLongSide: Double, renderer: StyleRenderer, backingScale: CGFloat)
+    func toggleStyles(); func choose(_ style: StickerStyle); func flip(); func floatOnTop(); func remove()
+    func update(style: StickerStyle, flipped: Bool, onTop: Bool); func previewRequest(for style: StickerStyle) -> RenderRequest; func renderPreviews(); func cancel()
+}
+@MainActor final class ToolbarPill {                            // [M5] a never-key child panel (ToolbarPillPanel) of the edited sticker
+    nonisolated static let gap: CGFloat                          // 8
+    let panel: ToolbarPillPanel; let model: ToolbarPillModel; init(model: ToolbarPillModel); static func makePanel() -> ToolbarPillPanel
+    nonisolated static func frame(size: CGSize, stickerRect: CGRect, visibleFrame: CGRect, gap: CGFloat = gap) -> CGRect   // under, else above, inside visibleFrame
+    var size: CGSize { get }; func attach(to parent: NSWindow); func setLevel(_ level: NSWindow.Level)
+    func place(around stickerRect: CGRect, visibleFrame: CGRect); func refit(); func close()
+}
 ```
 
 ### Capture, picker, session (M4)
@@ -488,7 +553,7 @@ struct PermissionPanelState: Equatable {                                        
          showMessage: ((String) -> Void)? = nil, presentPermission: (() -> Void)? = nil,
          presentPicker: ((PickerController) -> Void)? = nil, presentPlacement: ((PlacementSession) -> Void)? = nil,
          restoresFocus: Bool = true)   // [M4] defaulted extras; tests use the present… seams instead of showing windows
-    var isActive: Bool { get }                                                     // M5: while true, double-clicks on stickers don't enter editing (spec 5.2)
+    var isActive: Bool { get }                                                     // [M5] StickerManager.isSessionActive reads it: no double-click editing while true; a start takes over editing's focus hand-back
     var onActiveChange: ((Bool) -> Void)?
     func startCapture(orderingOut window: NSWindow? = nil)                         // [M4] window (Home) ordered out before screencapture
     func startReplace(sticker: UUID)
