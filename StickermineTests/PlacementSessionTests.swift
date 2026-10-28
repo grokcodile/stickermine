@@ -108,6 +108,24 @@ struct PlacementSessionTests {
         #expect(h.library.library.displays[display.uuid]?.placements.count == 1)
     }
 
+    /// Nothing to show (here: no master) ends the session instead of leaving it
+    /// waiting out of sight while every trigger is ignored.
+    @Test func aPlacementWhoseFirstRenderFailsEnds() async {
+        let h = Self.harness()
+        defer { try? FileManager.default.removeItem(at: h.folder) }
+        let display = Fixtures.external()
+        let session = PlacementSession(sticker: h.sticker.id, style: .outline, natural: h.sticker.naturalPointSize,
+                                       sourceLongSide: 800, renderer: StyleRenderer(masterProvider: { _ in nil }),
+                                       stickers: h.stickers, screens: FakeScreens([display]),
+                                       mouseLocation: { NSPoint(x: display.frame.midX, y: display.frame.midY) })
+        var outcome: PlacementSession.Outcome?
+        session.onEnd = { outcome = $0 }
+        session.start()
+        #expect(await PickerModelTests.waitUntil { outcome != nil })
+        #expect(outcome == .cancelled)
+        #expect(h.library.library.displays.isEmpty)
+    }
+
     @Test func cancellingPlacesNothing() {
         let h = Self.harness()
         defer { try? FileManager.default.removeItem(at: h.folder) }

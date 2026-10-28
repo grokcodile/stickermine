@@ -199,9 +199,18 @@ final class PlacementSession {
                 let rendered = try await renderer.render(request)
                 self?.show(rendered, for: request)
             } catch {
-                self?.log.error("placement render failed: \(String(describing: error), privacy: .public)")
+                self?.renderFailed(request, error: error)
             }
         }
+    }
+
+    /// A render that fails before anything showed ends the session: there is
+    /// nothing to place, and every trigger is ignored while it lasts. A failed
+    /// re-render on another display keeps the bitmap already showing.
+    private func renderFailed(_ request: RenderRequest, error: Error) {
+        log.error("placement render failed: \(String(describing: error), privacy: .public)")
+        guard !ended, request == self.request, panel?.isVisible == false else { return }
+        end(.cancelled)
     }
 
     private func show(_ rendered: RenderedSticker, for request: RenderRequest) {
