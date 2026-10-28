@@ -484,7 +484,9 @@ struct PermissionPanelState: Equatable {                                        
 @MainActor final class SessionCoordinator {
     init(capture: CaptureService, cutout: CutoutEngine, stickers: StickerManager, library: LibraryController, store: LibraryStore, renderer: StyleRenderer,
          screens: ScreenProvider? = nil, access: ScreenRecordingAccess = LiveScreenRecordingAccess(),
-         showMessage: ((String) -> Void)? = nil, presentPermission: (() -> Void)? = nil, restoresFocus: Bool = true)   // [M4] defaulted extras
+         showMessage: ((String) -> Void)? = nil, presentPermission: (() -> Void)? = nil,
+         presentPicker: ((PickerController) -> Void)? = nil, presentPlacement: ((PlacementSession) -> Void)? = nil,
+         restoresFocus: Bool = true)   // [M4] defaulted extras; tests use the present… seams instead of showing windows
     var isActive: Bool { get }                                                     // M5: while true, double-clicks on stickers don't enter editing (spec 5.2)
     var onActiveChange: ((Bool) -> Void)?
     func startCapture(orderingOut window: NSWindow? = nil)                         // [M4] window (Home) ordered out before screencapture

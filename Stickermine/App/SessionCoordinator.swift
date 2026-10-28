@@ -36,6 +36,8 @@ final class SessionCoordinator {
     private let access: ScreenRecordingAccess
     private let showMessage: (String) -> Void
     private let permissionOverride: (() -> Void)?
+    private let pickerOverride: ((PickerController) -> Void)?
+    private let placementOverride: ((PlacementSession) -> Void)?
     private let restoresFocus: Bool
     private let log = Logger(subsystem: "com.ethan.stickermine", category: "session")
 
@@ -49,13 +51,17 @@ final class SessionCoordinator {
     private var inFlightSticker: UUID?
     private var permissionPanel: PermissionPanel?
 
-    /// `screens` defaults to the live screens, `showMessage` to the HUD and
-    /// `presentPermission` to the permission panel; tests replace them and
-    /// turn `restoresFocus` off, so a test never activates another app.
+    /// `screens` defaults to the live screens, `showMessage` to the HUD,
+    /// `presentPermission` to the permission panel, `presentPicker` to showing
+    /// the picker near the cursor and `presentPlacement` to starting the
+    /// placement; tests replace them and turn `restoresFocus` off, so a test
+    /// never shows a window or activates another app.
     init(capture: CaptureService, cutout: CutoutEngine, stickers: StickerManager, library: LibraryController,
          store: LibraryStore, renderer: StyleRenderer, screens: ScreenProvider? = nil,
          access: ScreenRecordingAccess = LiveScreenRecordingAccess(),
          showMessage: ((String) -> Void)? = nil, presentPermission: (() -> Void)? = nil,
+         presentPicker: ((PickerController) -> Void)? = nil,
+         presentPlacement: ((PlacementSession) -> Void)? = nil,
          restoresFocus: Bool = true) {
         self.capture = capture
         self.cutout = cutout
@@ -67,6 +73,8 @@ final class SessionCoordinator {
         self.access = access
         self.showMessage = showMessage ?? { HUD.shared.show($0) }
         permissionOverride = presentPermission
+        pickerOverride = presentPicker
+        placementOverride = presentPlacement
         self.restoresFocus = restoresFocus
     }
 
@@ -190,6 +198,10 @@ final class SessionCoordinator {
         picker.onCancel = { [weak self] in self?.cancel() }
         model.onConfirm = { [weak self] confirmation in self?.confirmed(confirmation, session: session) }
         self.picker = picker
+        if let pickerOverride {
+            pickerOverride(picker)
+            return
+        }
         let mouse = NSEvent.mouseLocation
         let visible = cursorDisplay()?.visibleFrame ?? NSScreen.screens.first?.visibleFrame ?? .zero
         picker.show(near: mouse, visibleFrame: visible)
@@ -266,7 +278,11 @@ final class SessionCoordinator {
             self.end()
         }
         placement = session
-        session.start()
+        if let placementOverride {
+            placementOverride(session)
+        } else {
+            session.start()
+        }
     }
 
     // MARK: Start and end
