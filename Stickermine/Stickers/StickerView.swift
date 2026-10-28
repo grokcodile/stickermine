@@ -4,26 +4,48 @@ import QuartzCore
 /// The content view of a StickerPanel: a layer-hosting view whose root layer
 /// holds three sublayers we own, back to front:
 /// - `hitPadLayer`: alpha 1/255 over the whole padded frame while editing, so the
-///   transparent parts of the box (and later the corner knob) can be grabbed;
-///   hidden otherwise, so transparent pixels click through.
+///   transparent parts of the box and the corner knob can be grabbed; hidden
+///   otherwise, so transparent pixels click through.
 /// - `contentLayer`: the sticker bitmap (CGImage or IOSurface), centred, with the
 ///   layer shadow. Gesture transforms go on this layer, never on the root.
-/// - `outlineLayer`: the subtle editing outline.
+/// - `outlineLayer`: the subtle editing outline, with the corner knob
+///   (`knobLayer`) as its sublayer, so both show and hide together.
 @MainActor
 final class StickerView: NSView {
+    /// A drag's steps: the mouse-down, each move, the mouse-up.
+    enum DragPhase: Equatable {
+        case began, moved, ended
+    }
+
+    /// What a drag that started while editing is doing.
+    enum DragKind: Equatable {
+        /// Started on the corner knob: scale and rotate.
+        case knob
+        /// Started anywhere else in the frame: move the sticker.
+        case move
+    }
+
     let contentLayer = CALayer()
     let hitPadLayer = CALayer()
     let outlineLayer = CAShapeLayer()
+    let knobLayer = CAShapeLayer()
 
     /// A double-click on an inactive (not editing) sticker.
     var onDoubleClick: (() -> Void)?
+    /// Every mouse-down on a sticker that isn't being edited (before
+    /// `onDoubleClick` for the second click of a double-click).
+    var onInactiveMouseDown: (() -> Void)?
     /// Key presses while the panel is key. Return true when handled.
     var onKeyDown: ((NSEvent) -> Bool)?
     /// Trackpad pinch and rotate, delivered whatever the editing state.
     var onMagnify: ((NSEvent) -> Void)?
     var onRotate: ((NSEvent) -> Void)?
-    /// Called right after `performDrag(with:)` returns for a drag started while editing.
-    var onDragEnded: (() -> Void)?
+    /// A drag that started away from the knob while editing (moving the
+    /// sticker): the phase and the cursor in screen coordinates.
+    var onMoveDrag: ((DragPhase, CGPoint) -> Void)?
+    /// A drag that started on the corner knob while editing: the phase, the
+    /// cursor in screen coordinates, and whether Shift is held.
+    var onKnobDrag: ((DragPhase, CGPoint, Bool) -> Void)?
     /// The window's backing scale after it changed (moved to a display with
     /// another scale, or the display's scale changed): the bitmap must be
     /// re-rendered at the new scale (spec section 11).
@@ -40,8 +62,22 @@ final class StickerView: NSView {
     private(set) var contentScale: CGFloat = 1
     private(set) var contentRotation: CGFloat = 0
     private(set) var isShowingEditingChrome = false
+    /// The knob's centre in this view's coordinates: the bottom-right corner
+    /// of the (transformed) outline.
+    private(set) var knobCenter: CGPoint = .zero
+    /// The drag in progress, from its mouse-down to its mouse-up.
+    private(set) var trackedDrag: DragKind?
 
     static let hitPadAlpha: CGFloat = 1.0 / 255.0
+    /// The outline sits this far outside the bitmap's box.
+    static let outlineOutset: CGFloat = 2
+    static let knobRadius: CGFloat = 7
+    /// A mouse-down this close to the knob's centre grabs the knob.
+    static let knobHitRadius: CGFloat = 12
+    /// While editing, the window keeps at least this much room on every side
+    /// of the bitmap's box, so the knob is never clipped and can be grabbed
+    /// (a None sticker has no shadow margin).
+    static let editingMargin: CGFloat = 14
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -64,6 +100,17 @@ final class StickerView: NSView {
         outlineLayer.lineDashPattern = [5, 4]
         outlineLayer.isHidden = true
 
+        let r = Self.knobRadius
+        knobLayer.path = CGPath(ellipseIn: CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r), transform: nil)
+        knobLayer.fillColor = NSColor.white.cgColor
+        knobLayer.strokeColor = NSColor.controlAccentColor.cgColor
+        knobLayer.lineWidth = 1.5
+        knobLayer.shadowColor = NSColor.black.cgColor
+        knobLayer.shadowOpacity = 0.3
+        knobLayer.shadowRadius = 1.5
+        knobLayer.shadowOffset = CGSize(width: 0, height: -0.5)
+        outlineLayer.addSublayer(knobLayer)
+
         root.addSublayer(hitPadLayer)
         root.addSublayer(contentLayer)
         root.addSublayer(outlineLayer)
@@ -82,14 +129,17 @@ final class StickerView: NSView {
     }
 
     /// The axis-aligned bounding box of `size` scaled by `scale` and rotated by
-    /// `rotation` radians.
+    /// `rotation` radians. The rotation math lives in one place,
+    /// `StickerGeometry.boundingSize(of:rotation:)` (M2); this only scales it.
     static func boundingSize(of size: CGSize, scale: CGFloat, rotation: CGFloat) -> CGSize {
-        let c = abs(cos(rotation))
-        let s = abs(sin(rotation))
-        return CGSize(
-            width: (size.width * c + size.height * s) * scale,
-            height: (size.width * s + size.height * c) * scale
-        )
+        let box = StickerGeometry.boundingSize(of: size, rotation: Double(rotation))
+        return CGSize(width: box.width * scale, height: box.height * scale)
+    }
+
+    /// The room the window keeps around the bitmap's box: the shadow margin,
+    /// and at least `editingMargin` while the editing chrome shows.
+    var windowMargin: CGFloat {
+        isShowingEditingChrome ? max(frameMargin, Self.editingMargin) : frameMargin
     }
 
     /// Shows `contents` (a CGImage or an IOSurface, as accepted by
@@ -147,7 +197,8 @@ final class StickerView: NSView {
         withoutAnimation { contentLayer.contents = nil }
     }
 
-    /// Scales and rotates the content around its centre (a live gesture preview).
+    /// Scales and rotates the content around its centre (a live gesture
+    /// preview); the outline and the knob follow it.
     func setContentTransform(scale: CGFloat, rotation: CGFloat) {
         contentScale = scale
         contentRotation = rotation
@@ -158,18 +209,25 @@ final class StickerView: NSView {
         }
     }
 
-    /// The hit pad and outline shown while the sticker is being edited.
+    /// The hit pad, outline and knob shown while the sticker is being edited.
+    /// Hiding them also forgets a drag in progress.
     func setEditingChrome(_ visible: Bool) {
         isShowingEditingChrome = visible
+        if !visible { trackedDrag = nil }
         withoutAnimation {
             hitPadLayer.isHidden = !visible
             outlineLayer.isHidden = !visible
         }
     }
 
+    /// Whether a mouse-down at `point` (this view's coordinates) grabs the knob.
+    func isOnKnob(_ point: CGPoint) -> Bool {
+        isShowingEditingChrome && hypot(point.x - knobCenter.x, point.y - knobCenter.y) <= Self.knobHitRadius
+    }
+
     /// Layer-hosting views don't pass the backing scale to their sublayers, so the
-    /// dashed outline (the only layer that draws vector content) gets it here:
-    /// when the view joins a window and whenever that window's scale changes.
+    /// dashed outline and the knob (the layers that draw vector content) get it
+    /// here: when the view joins a window and whenever that window's scale changes.
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         matchOutlineToBackingScale()
@@ -183,7 +241,10 @@ final class StickerView: NSView {
 
     private func matchOutlineToBackingScale() {
         guard let scale = window?.backingScaleFactor else { return }
-        withoutAnimation { outlineLayer.contentsScale = scale }
+        withoutAnimation {
+            outlineLayer.contentsScale = scale
+            knobLayer.contentsScale = scale
+        }
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -201,11 +262,17 @@ final class StickerView: NSView {
         }
     }
 
+    /// The outline is the bitmap's box, scaled and turned with the content
+    /// and set `outlineOutset` outside it; the knob sits on its bottom-right
+    /// corner.
     private func updateOutlinePath() {
-        let box = Self.boundingSize(of: contentPointSize, scale: contentScale, rotation: contentRotation)
-        let rect = CGRect(x: bounds.midX - box.width / 2, y: bounds.midY - box.height / 2,
-                          width: box.width, height: box.height).insetBy(dx: -2, dy: -2)
-        outlineLayer.path = CGPath(rect: rect, transform: nil)
+        let width = contentPointSize.width * contentScale + 2 * Self.outlineOutset
+        let height = contentPointSize.height * contentScale + 2 * Self.outlineOutset
+        var transform = CGAffineTransform(translationX: bounds.midX, y: bounds.midY).rotated(by: contentRotation)
+        let rect = CGRect(x: -width / 2, y: -height / 2, width: width, height: height)
+        outlineLayer.path = CGPath(rect: rect, transform: &transform)
+        knobCenter = CGPoint(x: width / 2, y: -height / 2).applying(transform)
+        knobLayer.position = knobCenter
     }
 
     private func withoutAnimation(_ body: () -> Void) {
@@ -226,11 +293,39 @@ final class StickerView: NSView {
         let editing = (window as? StickerPanel)?.isEditing ?? false
         guard editing else {
             // Inactive stickers absorb single clicks; a double-click starts editing.
+            onInactiveMouseDown?()
             if event.clickCount == 2 { onDoubleClick?() }
             return
         }
-        window?.performDrag(with: event)
-        onDragEnded?()
+        // The window follows the mouse here, event by event (not the window
+        // server's performDrag), so the drag's end is the mouse-up and the pill
+        // can follow every step.
+        let kind: DragKind = isOnKnob(convert(event.locationInWindow, from: nil)) ? .knob : .move
+        trackedDrag = kind
+        report(kind, .began, event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let kind = trackedDrag else { return }
+        report(kind, .moved, event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard let kind = trackedDrag else { return }
+        trackedDrag = nil
+        report(kind, .ended, event)
+    }
+
+    private func report(_ kind: DragKind, _ phase: DragPhase, _ event: NSEvent) {
+        let point = screenLocation(of: event)
+        switch kind {
+        case .knob: onKnobDrag?(phase, point, event.modifierFlags.contains(.shift))
+        case .move: onMoveDrag?(phase, point)
+        }
+    }
+
+    private func screenLocation(of event: NSEvent) -> CGPoint {
+        window?.convertPoint(toScreen: event.locationInWindow) ?? NSEvent.mouseLocation
     }
 
     override func keyDown(with event: NSEvent) {
