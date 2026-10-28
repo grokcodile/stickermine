@@ -290,8 +290,11 @@ final class SessionCoordinator {
     private func begin(_ stage: Stage) {
         sessionID += 1
         self.stage = stage
-        stickers.endEditing(discardGesture: true)
-        let frontmost = restoresFocus ? NSWorkspace.shared.frontmostApplication : nil
+        // Editing ends (discarding a gesture) without handing focus back: the
+        // session takes over the app editing would have returned it to, and
+        // hands focus back itself when it ends.
+        let beforeEditing = stickers.endEditing(discardGesture: true, returningFocus: false)
+        let frontmost = restoresFocus ? (beforeEditing ?? NSWorkspace.shared.frontmostApplication) : nil
         previousApp = frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : frontmost
         onActiveChange?(true)
     }

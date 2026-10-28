@@ -83,8 +83,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.stickers = stickers
         log.notice("library \(Self.describe(library.loadResult), privacy: .public): \(library.library.stickers.count) stickers")
 
-        session = SessionCoordinator(capture: CaptureService(), cutout: CutoutEngine(), stickers: stickers,
-                                     library: library, store: store, renderer: renderer, screens: screens)
+        let session = SessionCoordinator(capture: CaptureService(), cutout: CutoutEngine(), stickers: stickers,
+                                         library: library, store: store, renderer: renderer, screens: screens)
+        // Double-clicks don't enter editing while a session runs (spec section 5.2).
+        stickers.isSessionActive = { [weak session] in session?.isActive ?? false }
+        self.session = session
     }
 
     /// The capture triggers: the menu bar icon and the global shortcut
