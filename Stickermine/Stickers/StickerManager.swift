@@ -9,16 +9,23 @@ private func stickerDisplayReconfigured(_ display: CGDirectDisplayID, _ flags: C
 }
 
 /// Owns every sticker panel and keeps them in step with the library and the
-/// connected displays (spec sections 9 and 11).
+/// connected displays (spec sections 9 and 11), and runs editing (section 10).
 ///
 /// - The model is the only source of truth. Every reconcile re-applies
 ///   visibility and frames from it to every panel; a snapshot diff of the
 ///   displays only decides whether poses are re-resolved.
 /// - Panels of a display that is gone are ordered out and kept, and ordered in
 ///   again when it returns. A display event never writes the library.
-/// - Only `place`, `remove` and `deleteSticker` (user actions) write, plus the
-///   spec's exceptions: a returning display's lastSeen and name (quietly, with
-///   the next save) and a fingerprint re-key on the next user edit.
+/// - Only user actions write: `place`, `remove`, `deleteSticker`, and while
+///   editing: bring to front, drag end, scale or rotate end, Style, Flip,
+///   Float on top. Plus the spec's exceptions: a returning display's lastSeen
+///   and name (quietly, with the next save) and a fingerprint re-key on the
+///   next user edit.
+/// - A gesture or a drag holds its panel's frame: reconciles and renders
+///   leave it alone until the drag ends or the gesture's bitmap is shown.
+///   Editing that ends mid-gesture or mid-drag (Esc, resigning key, a display
+///   change ordering the panel out, sleep, lock, a session starting, a
+///   rebuild) discards it and writes nothing.
 @MainActor
 final class StickerManager {
     /// Set from design/spike-results.md, Decisions: "Do panels go stale, and
@@ -513,6 +520,8 @@ final class StickerManager {
         let id = editor.placementID
         if !discardGesture, editor.isGestureActive {
             commitGesture(placement: id, scaleFactor: editor.scaleFactor, rotationDelta: editor.rotationDelta)
+        } else if !discardGesture, editor.isDragging {
+            commitDrag(placement: id)
         }
         self.editor = nil
         editor.tearDown()
@@ -602,6 +611,53 @@ final class StickerManager {
         refreshPanel(for: id)
         // Nothing new to render (the same request): settle at once.
         if entry.hold == .settling, entry.request == entry.shownRequest { settle(entry) }
+    }
+
+    /// A drag ended (the mouse-up): the hold ends. On the same display it
+    /// writes only this size's pose, with the centre settled inside the
+    /// display. With the centre on another display (`NSMouseInRect`, else the
+    /// nearest), it is a placement there: the placement moves to that
+    /// display's list (created if needed), on top, with `poses = [size: pose]`
+    /// at the same on-screen size (spec section 11). A drag that didn't move
+    /// writes nothing and puts the window back. A render that finished during
+    /// the drag is shown now.
+    func commitDrag(placement id: UUID) {
+        guard let entry = entries[id], entry.hold == .live else { return }
+        let frame = entry.panel.frame
+        let center = CGPoint(x: frame.midX, y: frame.midY)
+        entry.hold = .none
+        if let pending = entry.pendingRender, let request = entry.request {
+            show(pending, for: request, in: entry)
+        }
+        guard !library.isReadOnly, let target = editTarget(for: id) else { return }
+        let start = CGPoint(x: target.layout.stickerRect.midX, y: target.layout.stickerRect.midY)
+        // applyFrame centres the window to within a backing pixel.
+        guard hypot(center.x - start.x, center.y - start.y) >= 1,
+              let drop = Self.display(containing: center, in: screens.currentDisplays())
+        else {
+            applyFrame(entry, layout: target.layout)
+            return
+        }
+        let box = target.layout.stickerRect.size
+        let settled = EditGeometry.settledCenter(center, boxSize: box, frame: drop.frame,
+                                                 visibleFrame: drop.visibleFrame)
+        let pose = StickerGeometry.pose(center: settled, scale: target.layout.pose.scale, in: drop.frame)
+        if drop.uuid == target.display.uuid {
+            _ = recordKeyForUserEdit(on: drop)
+            library.mutate { library in
+                library.updatePlacement(id) { $0 = LayoutResolver.writing(pose, to: $0, at: drop.size) }
+            }
+        } else {
+            _ = recordKeyForUserEdit(on: target.display)
+            let key = recordKeyForUserEdit(on: drop)
+            library.mutate { library in
+                library.updatePlacement(id) { $0 = LayoutResolver.placing(pose, to: $0, at: drop.size) }
+                library.movePlacement(id, toDisplay: key)
+            }
+            log.notice("dropped \(Self.short(id), privacy: .public) on display \(drop.uuid, privacy: .public)")
+        }
+        refreshPanel(for: id)
+        editor?.placementDidChange()
     }
 
     /// Style from the toolbar pill: the placement's style and its sticker's

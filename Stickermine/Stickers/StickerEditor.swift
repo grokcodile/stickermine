@@ -81,6 +81,10 @@ final class LiveEditingFocus: EditingFocus {
 /// centre). When the last gesture ends, the manager writes the new pose and
 /// rotation, renders the bitmap with them baked in, and then shrinks the
 /// window and resets the transform in one step.
+///
+/// A drag moves the window with the mouse, event by event, while the manager
+/// holds the frame; the pill follows each step. At the mouse-up the manager
+/// writes the new position, or a placement on the display under the centre.
 @MainActor
 final class StickerEditor {
     enum Gesture: Hashable {
@@ -119,6 +123,8 @@ final class StickerEditor {
     /// sticker outgrows the square).
     private(set) var gestureResizeCount = 0
     private var knobStart: (vector: CGVector, scale: Double, rotation: Double)?
+    /// The window's origin minus the cursor at the drag's mouse-down.
+    private(set) var dragOffset: CGVector?
 
     init(placementID: UUID, panel: StickerPanel, view: StickerView, previousApp: NSRunningApplication?,
          target: StickerManager.EditTarget, renderer: StyleRenderer, manager: StickerManager) {
@@ -140,8 +146,8 @@ final class StickerEditor {
 
     var isGestureActive: Bool { !activeGestures.isEmpty }
 
-    /// Takes the view's editing events (keys, gestures, the knob) and shows
-    /// the pill.
+    /// Takes the view's editing events (keys, gestures, the knob, drags) and
+    /// shows the pill.
     func show() {
         view.onKeyDown = { [weak self] event in self?.keyDown(event) ?? false }
         view.onMagnify = { [weak self] event in
@@ -151,6 +157,7 @@ final class StickerEditor {
             self?.rotate(byDegrees: Double(event.rotation), phase: event.phase)
         }
         view.onKnobDrag = { [weak self] phase, point, shift in self?.knob(phase, at: point, snapping: shift) }
+        view.onMoveDrag = { [weak self] phase, point in self?.drag(phase, at: point) }
         pill.attach(to: panel)
         placePill()
     }
@@ -162,9 +169,11 @@ final class StickerEditor {
         view.onMagnify = nil
         view.onRotate = nil
         view.onKnobDrag = nil
+        view.onMoveDrag = nil
         activeGestures = []
         base = nil
         knobStart = nil
+        dragOffset = nil
         pill.close()
     }
 
@@ -183,6 +192,36 @@ final class StickerEditor {
         default:
             return false
         }
+    }
+
+    // MARK: Drag
+
+    var isDragging: Bool { dragOffset != nil }
+
+    /// A drag that started away from the knob: the window follows the cursor
+    /// (`point`, screen coordinates) and the pill follows the window. At the
+    /// mouse-up the manager writes the new position (or a placement on another
+    /// display). Ignored while a gesture runs or settles.
+    func drag(_ phase: StickerView.DragPhase, at point: CGPoint) {
+        switch phase {
+        case .began:
+            guard !isGestureActive, !isDragging, manager.holdFrame(for: placementID) else { return }
+            dragOffset = CGVector(dx: panel.frame.minX - point.x, dy: panel.frame.minY - point.y)
+        case .moved:
+            follow(point)
+        case .ended:
+            guard isDragging else { return }
+            follow(point)
+            dragOffset = nil
+            manager.commitDrag(placement: placementID)
+            placePill()
+        }
+    }
+
+    private func follow(_ point: CGPoint) {
+        guard let offset = dragOffset else { return }
+        panel.setFrameOrigin(NSPoint(x: point.x + offset.dx, y: point.y + offset.dy))
+        placePill()
     }
 
     // MARK: Gestures
@@ -234,9 +273,11 @@ final class StickerEditor {
         if phase.isEmpty { endGesture(kind) }
     }
 
-    /// The first gesture grows the window once; later ones join it.
+    /// The first gesture grows the window once; later ones join it. None
+    /// starts during a drag.
     private func beginGesture(_ kind: Gesture) -> Bool {
         if activeGestures.contains(kind) { return true }
+        guard !isDragging else { return false }
         if activeGestures.isEmpty {
             guard let target = manager.editTarget(for: placementID), target.layout.pose.scale > 0,
                   manager.holdFrame(for: placementID)
