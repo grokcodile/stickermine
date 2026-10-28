@@ -41,6 +41,18 @@ final class StickerManager {
         }
     }
 
+    /// Everything the editor needs to know about the placement it edits.
+    struct EditTarget {
+        let placement: Placement
+        let natural: CGSize
+        /// The master's long side in pixels (the style parameters scale with it).
+        let sourceLongSide: Double
+        /// Where it is drawn now.
+        let layout: StickerGeometry.Layout
+        /// The display it is drawn on.
+        let display: DisplayInfo
+    }
+
     private final class Entry {
         let panel: StickerPanel
         let view: StickerView
@@ -61,6 +73,7 @@ final class StickerManager {
     private let screens: ScreenProvider
     private let renderer: StyleRenderer
     private let reconcileDelay: TimeInterval
+    private let focus: EditingFocus
     private let log = Logger(subsystem: "com.ethan.stickermine", category: "stickers")
 
     private var entries: [UUID: Entry] = [:]
@@ -79,18 +92,27 @@ final class StickerManager {
     /// The instance the Core Graphics callback reaches (the app has one).
     private static weak var observing: StickerManager?
 
-    /// The placement being edited (M5's StickerEditor sets it; nothing does in M2).
-    private(set) var editingPlacement: UUID?
+    /// The editing session, if a sticker is being edited.
+    private(set) var editor: StickerEditor?
+    /// The placement being edited.
+    var editingPlacement: UUID? { editor?.placementID }
+    /// The focus hand-back a click on another sticker put off (see `inactiveStickerClicked`).
+    private var deferredFocusReturn: (app: NSRunningApplication?, work: DispatchWorkItem)?
+    /// Whether a sticker session (capture to placement) is running: double-clicks
+    /// don't enter editing then (spec section 5.2). AppDelegate sets it.
+    var isSessionActive: () -> Bool = { false }
     /// Diagnostics for logs and tests.
     private(set) var reconcileCount = 0
     private(set) var renderRequestsIssued = 0
 
+    /// `focus` defaults to the live one; tests pass a recorder.
     init(library: LibraryController, screens: ScreenProvider, renderer: StyleRenderer,
-         reconcileDelay: TimeInterval = 0.45) {
+         reconcileDelay: TimeInterval = 0.45, focus: EditingFocus? = nil) {
         self.library = library
         self.screens = screens
         self.renderer = renderer
         self.reconcileDelay = reconcileDelay
+        self.focus = focus ?? LiveEditingFocus()
     }
 
     // MARK: Panels from the model
@@ -150,6 +172,7 @@ final class StickerManager {
                 // Its display is gone: order out, keep the panels for its return.
                 for placement in record.placements {
                     if let entry = entries[placement.id], entry.panel.isVisible {
+                        if editingPlacement == placement.id { endEditing(discardGesture: true) }
                         entry.panel.orderOut(nil)
                         log.notice("ordered out \(Self.short(placement.id), privacy: .public): display \(recordKey, privacy: .public) is gone")
                     }
@@ -165,7 +188,10 @@ final class StickerManager {
                     entry.displayUUID = display.uuid
                 }
                 guard let layout = entry.layout else {
-                    if entry.panel.isVisible { entry.panel.orderOut(nil) }
+                    if entry.panel.isVisible {
+                        if editingPlacement == placement.id { endEditing(discardGesture: true) }
+                        entry.panel.orderOut(nil)
+                    }
                     continue
                 }
                 let level = PanelPolicy.level(onTop: placement.onTop)
@@ -290,6 +316,14 @@ final class StickerManager {
         library.mutate { _ = $0.removePlacement(id) }
     }
 
+    /// Removes a placement on the next turn of the run loop: the Delete key
+    /// arrives inside the panel's own event, which must not close it.
+    func scheduleRemoval(of id: UUID) {
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated { self?.remove(placement: id) }
+        }
+    }
+
     /// Delete from history: every placement on every display (connected or
     /// not), the PNG, then the entry (spec section 12).
     func deleteSticker(_ sticker: UUID) {
@@ -347,6 +381,7 @@ final class StickerManager {
             entry.panel.sharingType = wanted
             if entry.panel.sharingType != wanted { stuck.append(id) }
         }
+        editor?.pill.panel.sharingType = wanted
         guard !stuck.isEmpty else { return }
         if let editing = editingPlacement, stuck.contains(editing) { endEditing(discardGesture: true) }
         let model = library.library
@@ -387,24 +422,163 @@ final class StickerManager {
 
     var isClickThroughFallbackEnabled: Bool { fallback != nil }
 
-    // MARK: Editing (M5 owns entering it)
+    /// In the fallback mode, lets the sticker under `point` take the mouse
+    /// now instead of at the next mouse move (editing just ended).
+    func updateClickThrough(at point: NSPoint) {
+        fallback?.update(at: point)
+    }
 
-    /// Ends editing, if any. M2 never enters editing (M5 adds StickerEditor);
-    /// this clears the state so delete, remove and rebuild already end editing first.
-    func endEditing(discardGesture: Bool) {
-        guard let id = editingPlacement else { return }
-        editingPlacement = nil
-        guard let entry = entries[id] else { return }
-        entry.panel.isEditing = false
-        entry.view.setEditingChrome(false)
-        entry.view.setContentTransform(scale: 1, rotation: 0)
+    // MARK: Editing
+
+    /// A double-click on a sticker (spec section 10): unless a session is
+    /// running or the library is read-only, the placement moves to the front
+    /// of its display's z-order (saved), the panel becomes key with the hit
+    /// pad, outline, knob and toolbar pill, and Stickermine is activated so
+    /// keys and trackpad gestures arrive. Another sticker's editing ends first.
+    func beginEditing(placement id: UUID) {
+        guard editingPlacement != id, !library.isReadOnly, !isSessionActive(),
+              let entry = entries[id], entry.panel.isVisible, entry.layout != nil,
+              let display = entry.displayUUID.flatMap({ presentDisplays[$0] })
+        else { return }
+        // Switching stickers keeps the app that was frontmost before the first one.
+        let previous = endEditing(discardGesture: true, returningFocus: false) ?? focus.frontmostOtherApp()
+        bringToFront(id, on: display)
+        guard let target = editTarget(for: id) else { return }
+        let editor = StickerEditor(placementID: id, panel: entry.panel, view: entry.view, previousApp: previous,
+                                   target: target, renderer: renderer, manager: self)
+        self.editor = editor
+        entry.panel.isEditing = true
+        entry.view.setEditingChrome(true)
         if let layout = entry.layout { applyFrame(entry, layout: layout) }
+        entry.panel.orderFrontRegardless()
+        focus.takeFocus(for: entry.panel)
+        editor.show()
+        log.notice("editing \(Self.short(id), privacy: .public)")
+    }
+
+    /// Ends editing, if any, and hands focus back to the app that was
+    /// frontmost before. With `discardGesture` a gesture in progress is
+    /// dropped: the transform resets, the frame comes back from the last saved
+    /// pose and nothing is written (spec section 10); otherwise it is written
+    /// first.
+    func endEditing(discardGesture: Bool) {
+        endEditing(discardGesture: discardGesture, returningFocus: true)
+    }
+
+    /// `endEditing(discardGesture:)` that, with `returningFocus` false, keeps
+    /// focus where it is and returns the app it would have handed it to (a
+    /// session starting or a double-click on another sticker takes that
+    /// over), also when a click on another sticker ended editing a moment
+    /// ago and its hand-back is still waiting.
+    @discardableResult
+    func endEditing(discardGesture: Bool, returningFocus: Bool) -> NSRunningApplication? {
+        guard let editor else {
+            // A click on another sticker ended editing a moment ago: whoever keeps
+            // focus now (a double-click, a session) takes over its hand-back.
+            guard !returningFocus, let pending = deferredFocusReturn else { return nil }
+            pending.work.cancel()
+            deferredFocusReturn = nil
+            return pending.app
+        }
+        let id = editor.placementID
+        self.editor = nil
+        editor.tearDown()
+        if let entry = entries[id] {
+            entry.panel.isEditing = false
+            entry.view.setEditingChrome(false)
+            if let layout = entry.layout { applyFrame(entry, layout: layout) }
+        }
+        // In the fallback click-through mode the panel gives the mouse back at
+        // once if the cursor is over its transparent margin.
+        updateClickThrough(at: NSEvent.mouseLocation)
+        log.notice("editing \(Self.short(id), privacy: .public) ended")
+        guard returningFocus else { return editor.previousApp }
+        focus.returnFocus(to: editor.previousApp)
+        return nil
+    }
+
+    /// The connected display under `point` (`NSMouseInRect`), else the nearest.
+    func display(at point: NSPoint) -> DisplayInfo? {
+        Self.display(containing: point, in: screens.currentDisplays())
+    }
+
+    /// The placement `id` as the editor sees it; nil when it isn't shown.
+    func editTarget(for id: UUID) -> EditTarget? {
+        let model = library.library
+        guard let entry = entries[id], let layout = entry.layout,
+              let display = entry.displayUUID.flatMap({ presentDisplays[$0] }),
+              let placement = model.placement(id), let sticker = model.sticker(placement.sticker)
+        else { return nil }
+        return EditTarget(placement: placement, natural: sticker.naturalPointSize,
+                          sourceLongSide: Double(max(sticker.pixelWidth, sticker.pixelHeight)),
+                          layout: layout, display: display)
+    }
+
+    /// Style from the toolbar pill: the placement's style and its sticker's
+    /// `lastStyle` (spec section 12).
+    func setStyle(_ style: StickerStyle, for id: UUID) {
+        editPlacement(id) { $0.restyle(id, to: style) }
+    }
+
+    /// Flip from the toolbar pill (horizontal; shared by every size).
+    func toggleFlip(for id: UUID) {
+        editPlacement(id) { $0.updatePlacement(id) { $0.flipped.toggle() } }
+    }
+
+    /// Float on top from the toolbar pill: `.floating` and back.
+    func toggleOnTop(for id: UUID) {
+        editPlacement(id) { $0.updatePlacement(id) { $0.onTop.toggle() } }
+    }
+
+    /// A user edit of one shown placement: re-keys an adopted display record,
+    /// writes, redraws and updates the pill.
+    private func editPlacement(_ id: UUID, _ change: (inout Library) -> Bool) {
+        guard !library.isReadOnly, let target = editTarget(for: id) else { return }
+        _ = recordKeyForUserEdit(on: target.display)
+        library.mutate { _ = change(&$0) }
+        refreshPanel(for: id)
+        if editingPlacement == id { editor?.placementDidChange() }
+    }
+
+    /// Entering editing brings the placement to the front of its display's
+    /// list (saved) and its panel to the front of its level.
+    private func bringToFront(_ id: UUID, on display: DisplayInfo) {
+        guard let key = library.library.displayKey(containing: id),
+              library.library.displays[key]?.placements.last?.id != id
+        else { return }
+        _ = recordKeyForUserEdit(on: display)
+        library.mutate { _ = $0.bringToFront(id) }
+    }
+
+    /// Any mouse-down on a sticker that isn't being edited ends another
+    /// sticker's editing: that sticker can't become key, so the editing
+    /// panel wouldn't resign. The click may be the first of a double-click
+    /// on that sticker, so focus goes back only once the double-click
+    /// interval has passed; a double-click (`beginEditing`) or a session
+    /// starting in the meantime takes the hand-back over instead.
+    private func inactiveStickerClicked(_ id: UUID) {
+        guard let editing = editingPlacement, editing != id else { return }
+        let app = endEditing(discardGesture: true, returningFocus: false)
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.finishDeferredFocusReturn() }
+        }
+        deferredFocusReturn?.work.cancel()
+        deferredFocusReturn = (app, work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + NSEvent.doubleClickInterval, execute: work)
+    }
+
+    /// A click on another sticker that didn't become a double-click: focus goes back now.
+    private func finishDeferredFocusReturn() {
+        guard let pending = deferredFocusReturn else { return }
+        deferredFocusReturn = nil
+        focus.returnFocus(to: pending.app)
     }
 
     // MARK: System events
 
     /// Observes screen changes, wake, unlock and the Core Graphics display
-    /// callback. The app calls it once; tests drive `reconcileNow()` directly.
+    /// callback, plus sleep and lock, which end editing. The app calls it
+    /// once; tests drive `reconcileNow()` and `systemWillSleepOrLock()` directly.
     func startObservingDisplayChanges() {
         guard observers.isEmpty else { return }
         let workspace = NSWorkspace.shared.notificationCenter
@@ -413,6 +587,9 @@ final class StickerManager {
         observe(workspace, NSWorkspace.screensDidWakeNotification, recheckLater: true)
         observe(DistributedNotificationCenter.default(), Notification.Name("com.apple.screenIsUnlocked"),
                 recheckLater: true)
+        observeSleepOrLock(workspace, NSWorkspace.willSleepNotification)
+        observeSleepOrLock(workspace, NSWorkspace.screensDidSleepNotification)
+        observeSleepOrLock(DistributedNotificationCenter.default(), Notification.Name("com.apple.screenIsLocked"))
         Self.observing = self
         let status = CGDisplayRegisterReconfigurationCallback(stickerDisplayReconfigured, nil)
         if status != .success {
@@ -425,6 +602,19 @@ final class StickerManager {
             MainActor.assumeIsolated { self?.systemEvent(recheckLater: recheckLater) }
         }
         observers.append((center, token))
+    }
+
+    private func observeSleepOrLock(_ center: NotificationCenter, _ name: Notification.Name) {
+        let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.systemWillSleepOrLock() }
+        }
+        observers.append((center, token))
+    }
+
+    /// Sleep or lock: editing ends and an in-progress gesture is discarded
+    /// (spec section 10).
+    func systemWillSleepOrLock() {
+        endEditing(discardGesture: true)
     }
 
     /// A screen change, wake or unlock: restart the reconcile timer. After wake
@@ -469,11 +659,13 @@ final class StickerManager {
     }
 
     /// Orders out the removed display's panels at once (looked up in the
-    /// in-memory ID map), then lets the debounced reconcile settle the rest.
+    /// in-memory ID map), ending editing on them first, then lets the
+    /// debounced reconcile settle the rest.
     func handleDisplayRemoved(displayID: UInt32) {
         guard let uuid = displayIDToUUID[displayID] else { return }
         if let recordKey = recordForDisplay[uuid], let record = library.library.displays[recordKey] {
             for placement in record.placements {
+                if editingPlacement == placement.id { endEditing(discardGesture: true) }
                 entries[placement.id]?.panel.orderOut(nil)
             }
         }
@@ -525,6 +717,14 @@ final class StickerManager {
             guard panel?.screen != nil else { return }
             self?.backingScaleChanged(for: id, to: scale)
         }
+        // Editing starts here; while it runs, StickerEditor takes the view's other events.
+        view.onDoubleClick = { [weak self] in self?.beginEditing(placement: id) }
+        view.onInactiveMouseDown = { [weak self] in self?.inactiveStickerClicked(id) }
+        // Clicking elsewhere (another app, the desktop, Home) ends editing.
+        panel.onResignKey = { [weak self] in
+            guard let self, self.editingPlacement == id else { return }
+            self.endEditing(discardGesture: true)
+        }
         let entry = Entry(panel: panel, view: view)
         entries[placement.id] = entry
         return entry
@@ -532,9 +732,10 @@ final class StickerManager {
 
     /// The window: the shown bitmap's box (an Outline or Puffy rim included;
     /// the sticker rect before the first render) centred on the sticker rect,
-    /// plus the shadow margin on every side, backing-aligned (spec section 9).
+    /// plus the shadow margin on every side (at least the editing margin while
+    /// editing), backing-aligned (spec section 9). The pill follows.
     private func applyFrame(_ entry: Entry, layout: StickerGeometry.Layout) {
-        let margin = entry.view.frameMargin
+        let margin = entry.view.windowMargin
         let content = entry.view.contentPointSize
         let size = content.width > 0 && content.height > 0 ? content : layout.stickerRect.size
         let box = CGRect(x: layout.stickerRect.midX - size.width / 2, y: layout.stickerRect.midY - size.height / 2,
@@ -544,6 +745,7 @@ final class StickerManager {
         if entry.panel.frame != target {
             entry.panel.setFrame(target, display: false)
         }
+        if let editor, editor.placementID == entry.panel.placementID { editor.placePill() }
     }
 
     private func requestRender(_ entry: Entry, placement: Placement, layout: StickerGeometry.Layout,
@@ -581,7 +783,9 @@ final class StickerManager {
         }
     }
 
+    /// Closes a panel for good, ending its editing first.
     private func tearDown(_ id: UUID) {
+        if editingPlacement == id { endEditing(discardGesture: true) }
         guard let entry = entries.removeValue(forKey: id) else { return }
         fallback?.forget(entry.panel)
         entry.view.clearContents()
