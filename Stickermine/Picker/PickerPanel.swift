@@ -37,7 +37,9 @@ final class PickerController {
     /// on deactivation, the floating-panel flag untouched, the level last.
     /// Non-activating, so it becomes key (and Esc and 1–4 arrive) even when
     /// the system turns down `NSApp.activate()`: the last input went to
-    /// `screencapture`'s crosshair, not to Stickermine.
+    /// `screencapture`'s crosshair, not to Stickermine. The session ignores
+    /// every trigger while it is up, so neither Hide (⌘H) nor a Space switch
+    /// may take it out of sight.
     static func makePanel() -> PickerPanel {
         let panel = PickerPanel(contentRect: NSRect(x: 0, y: 0, width: PickerView.width, height: 320),
                                 styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -47,7 +49,8 @@ final class PickerController {
         panel.hasShadow = true
         panel.isMovableByWindowBackground = true
         panel.animationBehavior = .none
-        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        panel.canHide = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.level = .floating  // last
         return panel
     }

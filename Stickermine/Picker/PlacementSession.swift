@@ -117,6 +117,7 @@ final class PlacementSession {
     /// The panel policy (spec section 4), plus the explicit
     /// `ignoresMouseEvents = false` this transient panel is allowed: its whole
     /// rectangle takes the click, transparent pixels included (spec section 7).
+    /// Never hidden by Hide (⌘H): the session ignores every trigger meanwhile.
     static func makePanel() -> PlacementPanel {
         let panel = PlacementPanel(contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
                                    styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -125,6 +126,7 @@ final class PlacementSession {
         panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.animationBehavior = .none
+        panel.canHide = false
         panel.ignoresMouseEvents = false
         panel.acceptsMouseMovedEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]

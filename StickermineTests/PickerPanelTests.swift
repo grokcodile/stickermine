@@ -54,4 +54,14 @@ struct PickerPanelTests {
         #expect(panel.styleMask.contains(.nonactivatingPanel))
         #expect(!panel.isVisible)
     }
+
+    /// The session ignores every trigger while the picker is up, so Hide (⌘H)
+    /// and a Space switch must not take it out of sight.
+    @Test func thePickerIsNeverHiddenAndJoinsEverySpace() {
+        let panel = PickerController.makePanel()
+        defer { panel.close() }
+        #expect(!panel.canHide)
+        #expect(panel.collectionBehavior.contains(.canJoinAllSpaces))
+        #expect(!panel.collectionBehavior.contains(.moveToActiveSpace))
+    }
 }

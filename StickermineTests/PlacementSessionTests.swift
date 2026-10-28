@@ -33,6 +33,14 @@ struct PlacementSessionTests {
         #expect(!panel.isVisible)
     }
 
+    /// Hide (⌘H) must not take the following sticker out of sight while the
+    /// session ignores every trigger.
+    @Test func thePlacementPanelIsNeverHidden() {
+        let panel = PlacementSession.makePanel()
+        defer { panel.close() }
+        #expect(!panel.canHide)
+    }
+
     @Test func theViewTakesEveryClickItself() throws {
         let view = PlacementView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
         #expect(view.hitTest(NSPoint(x: 50, y: 50)) === view)
