@@ -40,6 +40,8 @@ struct StickerEditingTests {
         #expect(h.library.hasPendingSave)
         // The window grows by the editing margin around the same centre (no bitmap yet: 200 × 100).
         #expect(panel.frame == CGRect(x: 40_576 - 100 - 14, y: 490 - 14, width: 228, height: 128))
+        // Editing never writes the mouse-event or floating-panel flag (spec section 9).
+        #expect(panel.mouseFlagWrites == 0 && panel.floatingFlagWrites == 0)
     }
 
     @Test func aStickerAlreadyInFrontWritesNothing() throws {
@@ -215,6 +217,8 @@ struct StickerEditingTests {
         #expect(pill.panel.level == PanelPolicy.stickerLevel)
         #expect(h.library.hasPendingSave)
         #expect(h.manager.editingPlacement == only.id)
+        // Editing never writes the mouse-event or floating-panel flag (spec section 9).
+        #expect(panel.mouseFlagWrites == 0 && panel.floatingFlagWrites == 0)
     }
 
     @Test func removeFromThePillDeletesOnlyThePlacement() throws {

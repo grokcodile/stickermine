@@ -58,6 +58,8 @@ struct StickerDragTests {
         editor.drag(.ended, at: CGPoint(x: start.x + 300, y: start.y - 200))
         #expect(h.manager.frameHold(for: only.id) == .none)
         #expect(h.library.hasPendingSave)
+        // Editing never writes the mouse-event or floating-panel flag (spec section 9).
+        #expect(panel.mouseFlagWrites == 0 && panel.floatingFlagWrites == 0)
     }
 
     @Test func aRenderThatLandsMidDragIsShownWhenTheDragEnds() async throws {
@@ -173,6 +175,8 @@ struct StickerDragTests {
         #expect(h.manager.renderRequest(for: moved.id)?.pointSize == CGSize(width: 100, height: 50))
         #expect(h.manager.editingPlacement == moved.id)
         #expect(near(panel.frame.midX, 50_756) && near(panel.frame.midY, 491))
+        // Editing never writes the mouse-event or floating-panel flag (spec section 9).
+        #expect(panel.mouseFlagWrites == 0 && panel.floatingFlagWrites == 0)
     }
 
     @Test func aDropOnADisplayWithoutARecordCreatesIt() throws {

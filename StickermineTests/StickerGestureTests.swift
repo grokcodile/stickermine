@@ -92,6 +92,8 @@ struct StickerGestureTests {
         #expect(near(panel.frame.height, second.pointBounds.height + 28, 1))
         #expect(near(panel.frame.midX, center.x) && near(panel.frame.midY, center.y))
         #expect(h.manager.editingPlacement == only.id)
+        // Editing never writes the mouse-event or floating-panel flag (spec section 9).
+        #expect(panel.mouseFlagWrites == 0 && panel.floatingFlagWrites == 0)
     }
 
     @Test func editingThatEndsWhileTheGestureSettlesKeepsItsLookUntilTheBitmapLands() async throws {
@@ -173,6 +175,8 @@ struct StickerGestureTests {
         let written = try #require(h.library.library.placement(only.id))
         #expect(abs(written.rotation - Double.pi / 12) < 1e-9)
         #expect(abs((written.poses["1920x1080"]?.scale ?? 0) - 2) < 1e-9)
+        // Editing never writes the mouse-event or floating-panel flag (spec section 9).
+        #expect(panel.mouseFlagWrites == 0 && panel.floatingFlagWrites == 0)
     }
 
     @Test func pressingTheKnobKeepsThePillUnderTheSticker() async throws {
