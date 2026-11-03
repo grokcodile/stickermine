@@ -255,6 +255,20 @@ final class StickerManager {
         reconcileNow()
     }
 
+    /// A sticker's master changed under the same ID (tutorial 1 redrawn for a
+    /// new shortcut): every placement of it is re-resolved from the model and
+    /// rendered again, even when its render request is unchanged (a new
+    /// shortcut can draw a card of the same size). Nothing is written.
+    func masterChanged(for sticker: UUID) {
+        renderer.invalidateCache(for: sticker)
+        let model = library.library
+        for (id, entry) in entries where model.placement(id)?.sticker == sticker {
+            entry.layout = nil
+            entry.request = nil
+        }
+        reconcileNow()
+    }
+
     /// Closes every panel; the next reconcile recreates them from the model.
     func closeAllPanels() {
         for id in Array(entries.keys) { tearDown(id) }
