@@ -321,6 +321,9 @@ final class StickerEditor {
         let square = NSRect(x: base.center.x - side / 2, y: base.center.y - side / 2, width: side, height: side)
         panel.setFrame(panel.backingAlignedRect(square, options: .alignAllEdgesOutward), display: true)
         gestureResizeCount += 1
+        // The window's origin moved: put the pill back under the sticker (a
+        // knob press resizes before any move would place it).
+        placePill()
     }
 
     private func endGesture(_ kind: Gesture) {

@@ -175,6 +175,26 @@ struct StickerGestureTests {
         #expect(abs((written.poses["1920x1080"]?.scale ?? 0) - 2) < 1e-9)
     }
 
+    @Test func pressingTheKnobKeepsThePillUnderTheSticker() async throws {
+        let only = EditingFixtures.placement(sticker)
+        let first = try await EditingHarness.render(EditingFixtures.request(sticker))
+        let h = try editing(only, shown: first)
+        defer { h.finish() }
+        let panel = try h.panel(only.id)
+        let view = try h.view(only.id)
+        let editor = try h.editor()
+        let pill = editor.pill.panel
+        let before = pill.frame
+        let knob = CGPoint(x: panel.frame.minX + view.knobCenter.x, y: panel.frame.minY + view.knobCenter.y)
+        // On a real display AppKit may carry the child pill along with the window's new
+        // origin when the window grows; this stands in for it.
+        pill.setFrameOrigin(NSPoint(x: before.minX - 130, y: before.minY - 180))
+        editor.knob(.began, at: knob, snapping: false)
+        // The window grew to the gesture square around the same centre; the pill stays under the sticker.
+        #expect(editor.gestureResizeCount == 1)
+        #expect(pill.frame == before)
+    }
+
     @Test func theKnobAndPinchStopAtTheScaleLimits() async throws {
         let only = EditingFixtures.placement(sticker)
         let first = try await EditingHarness.render(EditingFixtures.request(sticker))
