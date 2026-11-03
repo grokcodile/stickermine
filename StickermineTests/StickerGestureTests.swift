@@ -94,6 +94,38 @@ struct StickerGestureTests {
         #expect(h.manager.editingPlacement == only.id)
     }
 
+    @Test func editingThatEndsWhileTheGestureSettlesKeepsItsLookUntilTheBitmapLands() async throws {
+        let only = EditingFixtures.placement(sticker)
+        let quarter = EditGeometry.normalized(90 * Double.pi / 180)
+        let after = EditingFixtures.request(sticker, rotation: quarter, size: CGSize(width: 300, height: 150))
+        let first = try await EditingHarness.render(EditingFixtures.request(sticker))
+        let second = try await EditingHarness.render(after)
+        let h = try editing(only, shown: first)
+        defer { h.finish() }
+        let panel = try h.panel(only.id)
+        let view = try h.view(only.id)
+        let editor = try h.editor()
+        editor.magnify(by: 0.5, phase: .began)
+        editor.rotate(byDegrees: 90, phase: .began)
+        editor.magnify(by: 0, phase: .ended)
+        editor.rotate(byDegrees: 0, phase: .ended)
+        let square = panel.frame
+        // Esc before the baked bitmap lands: the saved change stays on screen as it is.
+        try h.end(.escape, editing: only.id)
+        #expect(h.manager.editingPlacement == nil)
+        #expect(h.manager.frameHold(for: only.id) == .settling)
+        #expect(abs(view.contentScale - 1.5) < 1e-9 && abs(Double(view.contentRotation) - quarter) < 1e-9)
+        #expect(panel.frame == square)
+        // The bitmap lands: one step to the new look, framed for a sticker that isn't being edited.
+        h.manager.commitRender(second, for: after, placement: only.id)
+        #expect(h.manager.frameHold(for: only.id) == .none)
+        #expect(view.contentScale == 1 && view.contentRotation == 0)
+        #expect(view.contentPointSize == second.pointBounds)
+        #expect(near(panel.frame.width, second.pointBounds.width + 2 * view.frameMargin, 1))
+        #expect(near(panel.frame.midX, center.x) && near(panel.frame.midY, center.y))
+        #expect(h.focus.returned.count == 1)
+    }
+
     @Test func aGestureThatChangesNothingWritesNothingAndShowsAWaitingRender() async throws {
         let only = EditingFixtures.placement(sticker)
         let rendered = try await EditingHarness.render(EditingFixtures.request(sticker))

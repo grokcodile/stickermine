@@ -528,10 +528,17 @@ final class StickerManager {
         if let entry = entries[id] {
             entry.panel.isEditing = false
             entry.view.setEditingChrome(false)
-            if entry.hold != .none {
+            switch entry.hold {
+            case .live:
+                // A gesture or drag in progress is discarded.
                 settle(entry)
-            } else if let layout = entry.layout {
-                applyFrame(entry, layout: layout)
+            case .settling:
+                // The gesture was saved: its bitmap resets the transform and
+                // shrinks the window in one step when it lands (or a failed
+                // render settles it).
+                break
+            case .none:
+                if let layout = entry.layout { applyFrame(entry, layout: layout) }
             }
         }
         // In the fallback click-through mode the panel gives the mouse back at
