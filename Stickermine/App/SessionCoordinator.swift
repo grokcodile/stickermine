@@ -44,7 +44,9 @@ final class SessionCoordinator {
     /// Bumped by every start and end, so late async results of an ended
     /// session are dropped.
     private var sessionID = 0
-    private var previousApp: NSRunningApplication?
+    /// The app focus goes back to when the session ends: the one editing
+    /// would have handed it to, else the one frontmost at the start.
+    private(set) var previousApp: NSRunningApplication?
     private var analysis: CutoutAnalysis?
     private var picker: PickerController?
     private var placement: PlacementSession?
@@ -294,7 +296,7 @@ final class SessionCoordinator {
         // session takes over the app editing would have returned it to, and
         // hands focus back itself when it ends.
         let beforeEditing = stickers.endEditing(discardGesture: true, returningFocus: false)
-        let frontmost = restoresFocus ? (beforeEditing ?? NSWorkspace.shared.frontmostApplication) : nil
+        let frontmost = beforeEditing ?? (restoresFocus ? NSWorkspace.shared.frontmostApplication : nil)
         previousApp = frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : frontmost
         onActiveChange?(true)
     }
@@ -313,7 +315,7 @@ final class SessionCoordinator {
         }
         currentSticker = nil
         stage = .idle
-        if let previousApp, !previousApp.isTerminated, NSApp.isActive {
+        if restoresFocus, let previousApp, !previousApp.isTerminated, NSApp.isActive {
             previousApp.activate()
         }
         previousApp = nil

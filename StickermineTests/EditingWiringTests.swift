@@ -26,12 +26,17 @@ struct EditingWiringTests {
         h.manager.commitRender(first, for: EditingFixtures.request(sticker), placement: only.id)
         let panel = try h.panel(only.id)
         let saved = panel.frame
+        let other = try EditingFixtures.otherApp()
+        h.focus.frontmost = other
         h.manager.beginEditing(placement: only.id)
+        h.focus.frontmost = nil
         try h.editor().magnify(by: 0.5, phase: .began)
         session.startCapture()
         #expect(session.isActive)
         #expect(h.manager.editingPlacement == nil)
         #expect(h.focus.returned.isEmpty, "the session hands focus back when it ends")
+        // The app that was frontmost before the double-click, not Stickermine (frontmost while editing).
+        #expect(session.previousApp?.processIdentifier == other.processIdentifier)
         #expect(try h.view(only.id).contentScale == 1)
         #expect(panel.frame == saved)
         #expect(h.library.library.placement(only.id) == only)
@@ -54,10 +59,14 @@ struct EditingWiringTests {
                                          showMessage: { _ in }, presentPermission: {}, restoresFocus: false)
         defer { session.cancel() }
         h.manager.restoreAll()
+        let other = try EditingFixtures.otherApp()
+        h.focus.frontmost = other
         h.manager.beginEditing(placement: a.id)
+        h.focus.frontmost = nil
         try h.view(b.id).onInactiveMouseDown?()
         session.startCapture()
         #expect(session.isActive)
+        #expect(session.previousApp?.processIdentifier == other.processIdentifier)
         h.finish()
         try await Task.sleep(nanoseconds: UInt64((NSEvent.doubleClickInterval + 0.3) * 1_000_000_000))
         #expect(h.focus.returned.isEmpty, "the session hands focus back when it ends")

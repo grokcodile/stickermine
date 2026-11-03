@@ -17,6 +17,11 @@ struct StickerEditingTests {
                            displays: [Fixtures.external(), Fixtures.main()])
     }
 
+    /// The apps focus was handed back to, by process.
+    private func returned(_ h: EditingHarness) -> [pid_t?] {
+        h.focus.returned.map { $0?.processIdentifier }
+    }
+
     @Test func aDoubleClickEntersEditingBringsTheStickerToFrontAndTakesFocus() throws {
         let back = placement(x: 0.3), front = placement(x: 0.7)
         let h = try harness([back, front])
@@ -73,14 +78,18 @@ struct StickerEditingTests {
         h.manager.restoreAll()
         let panel = try h.panel(only.id)
         let view = try h.view(only.id)
+        let other = try EditingFixtures.otherApp()
+        h.focus.frontmost = other
         h.manager.beginEditing(placement: only.id)
+        h.focus.frontmost = nil
         let pill = try h.editor().pill.panel
         view.keyDown(with: try EditingHarness.keyEvent(53, "\u{1b}"))
         #expect(h.manager.editingPlacement == nil)
         #expect(!panel.isEditing && !panel.canBecomeKey)
         #expect(!view.isShowingEditingChrome)
         #expect(view.onKeyDown == nil)
-        #expect(h.focus.returned.count == 1)
+        // Back to the app that was frontmost before the double-click.
+        #expect(returned(h) == [other.processIdentifier])
         #expect(panel.frame == CGRect(x: 40_860, y: 490, width: 200, height: 100))
         #expect(!pill.isVisible)
         #expect(pill.parent == nil)
@@ -94,13 +103,16 @@ struct StickerEditingTests {
         defer { h.finish() }
         h.manager.restoreAll()
         let view = try h.view(only.id)
+        let other = try EditingFixtures.otherApp()
+        h.focus.frontmost = other
         h.manager.beginEditing(placement: only.id)
+        h.focus.frontmost = nil
         let pill = try h.editor().pill.panel
         try h.end(trigger, editing: only.id)
         #expect(h.manager.editingPlacement == nil)
         #expect(!view.isShowingEditingChrome)
         #expect(!pill.isVisible)
-        #expect(h.focus.returned.count == 1)
+        #expect(returned(h) == [other.processIdentifier])
         #expect(!h.library.hasPendingSave)
     }
 
@@ -109,7 +121,10 @@ struct StickerEditingTests {
         let h = try harness([a, b])
         defer { h.finish() }
         h.manager.restoreAll()
+        let other = try EditingFixtures.otherApp()
+        h.focus.frontmost = other
         h.manager.beginEditing(placement: a.id)
+        h.focus.frontmost = nil
         try h.view(a.id).onInactiveMouseDown?()   // the edited sticker's own view: ignored
         #expect(h.manager.editingPlacement == a.id)
         try h.view(b.id).onInactiveMouseDown?()
@@ -117,11 +132,14 @@ struct StickerEditingTests {
         // It may be the first click of a double-click on b: focus stays for now.
         #expect(h.focus.returned.isEmpty)
         h.finish()
-        try await Task.sleep(nanoseconds: UInt64((NSEvent.doubleClickInterval + 0.3) * 1_000_000_000))
-        #expect(h.focus.returned.count == 1)
+        let interval = NSEvent.doubleClickInterval
+        try await Task.sleep(nanoseconds: UInt64(interval / 3 * 1_000_000_000))
+        #expect(h.focus.returned.isEmpty, "the hand-back waits for the whole double-click interval")
+        try await Task.sleep(nanoseconds: UInt64((interval * 2 / 3 + 0.3) * 1_000_000_000))
+        #expect(returned(h) == [other.processIdentifier])
     }
 
-    @Test func doubleClickingAnotherStickerSwitchesEditingAndKeepsTheFirstFocusOwner() throws {
+    @Test func doubleClickingAnotherStickerSwitchesEditingAndKeepsTheFirstFocusOwner() async throws {
         let a = placement(x: 0.3), b = placement(x: 0.7)
         let h = try harness([a, b])
         defer { h.finish() }
@@ -139,6 +157,12 @@ struct StickerEditingTests {
         #expect(h.focus.returned.isEmpty)
         #expect(try h.editor().previousApp?.processIdentifier == ProcessInfo.processInfo.processIdentifier)
         #expect(h.focus.taken.count == 2)
+        // Closing the panels ends b's editing: one hand-back, to the first owner. The click on b
+        // put one off; the double-click took it over, so it never fires.
+        h.finish()
+        #expect(returned(h) == [ProcessInfo.processInfo.processIdentifier])
+        try await Task.sleep(nanoseconds: UInt64((NSEvent.doubleClickInterval + 0.3) * 1_000_000_000))
+        #expect(returned(h) == [ProcessInfo.processInfo.processIdentifier])
     }
 
     @Test func thePillIsAChildPanelUnderTheStickerAtItsLevel() throws {
@@ -198,10 +222,14 @@ struct StickerEditingTests {
         let h = try harness([only])
         defer { h.finish() }
         h.manager.restoreAll()
+        let other = try EditingFixtures.otherApp()
+        h.focus.frontmost = other
         h.manager.beginEditing(placement: only.id)
+        h.focus.frontmost = nil
         let pill = try h.editor().pill
         pill.model.onRemove?()
         #expect(h.manager.editingPlacement == nil)
+        #expect(returned(h) == [other.processIdentifier])
         #expect(h.manager.panel(for: only.id) == nil)
         #expect(!pill.panel.isVisible)
         #expect(h.library.library.placement(only.id) == nil)

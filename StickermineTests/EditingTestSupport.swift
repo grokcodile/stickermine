@@ -48,6 +48,13 @@ enum EditingFixtures {
                       backingScale: backingScale)
     }
 
+    /// A running app other than the test host, for focus bookkeeping only:
+    /// RecordingFocus never activates it, and sessions in tests never restore focus.
+    static func otherApp() throws -> NSRunningApplication {
+        let me = ProcessInfo.processInfo.processIdentifier
+        return try #require(NSWorkspace.shared.runningApplications.first { $0.processIdentifier != me && !$0.isTerminated })
+    }
+
     static func near(_ a: CGFloat, _ b: CGFloat, _ tolerance: CGFloat = 0.5) -> Bool {
         abs(a - b) <= tolerance
     }
