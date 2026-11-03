@@ -5,8 +5,9 @@ import Carbon.HIToolbox
 /// `design/menubar-glyph.svg` (asset `MenuBarGlyph`, a template image drawn
 /// white or black to match the menu bar). A left-click starts a capture; a
 /// right-click or Control-click shows the menu: New Sticker (with the
-/// shortcut; disabled during a session) and Quit. M6 adds Open Stickermine…
-/// and hiding the icon. `MenuBarExtra` isn't used: it can't act on a plain click.
+/// shortcut; disabled during a session), Open Stickermine… and Quit. The
+/// icon can be hidden (`showMenuBarIcon`); the item is kept and shown again.
+/// `MenuBarExtra` isn't used: it can't act on a plain click.
 @MainActor
 final class StatusItemController: NSObject {
     static let glyphName = "MenuBarGlyph"
@@ -19,6 +20,8 @@ final class StatusItemController: NSObject {
 
     /// A left-click or the menu's New Sticker.
     var onCapture: (() -> Void)?
+    /// The menu's Open Stickermine….
+    var onOpenHome: (() -> Void)?
     /// The menu's Quit.
     var onQuit: (() -> Void)?
 
@@ -35,6 +38,8 @@ final class StatusItemController: NSObject {
         super.init()
         newStickerItem.target = self
         newStickerItem.action = #selector(newSticker(_:))
+        built.openHome.target = self
+        built.openHome.action = #selector(openHome(_:))
         built.quit.target = self
         built.quit.action = #selector(quit(_:))
         if let button = statusItem.button {
@@ -52,6 +57,19 @@ final class StatusItemController: NSObject {
         Self.applyShortcut(shortcut, to: newStickerItem)
     }
 
+    /// "Show menu bar icon" (spec section 13).
+    var isVisible: Bool {
+        get { statusItem.isVisible }
+        set { statusItem.isVisible = newValue }
+    }
+
+    /// The icon's frame on screen, for the support ask to hang below; nil
+    /// while the icon is hidden.
+    var buttonScreenFrame: CGRect? {
+        guard statusItem.isVisible, let button = statusItem.button, let window = button.window else { return nil }
+        return window.convertToScreen(button.convert(button.bounds, to: nil))
+    }
+
     /// The glyph from the asset catalog, as an 18 × 18 pt template image.
     static func glyph() -> NSImage? {
         guard let named = NSImage(named: glyphName), let image = named.copy() as? NSImage else { return nil }
@@ -60,18 +78,22 @@ final class StatusItemController: NSObject {
         return image
     }
 
-    /// The menu: New Sticker (with the shortcut), a separator, Quit Stickermine.
-    static func makeMenu(shortcut: Shortcut?) -> (menu: NSMenu, newSticker: NSMenuItem, quit: NSMenuItem) {
+    /// The menu: New Sticker (with the shortcut), Open Stickermine…, a
+    /// separator, Quit Stickermine.
+    static func makeMenu(shortcut: Shortcut?)
+        -> (menu: NSMenu, newSticker: NSMenuItem, openHome: NSMenuItem, quit: NSMenuItem) {
         let menu = NSMenu()
         menu.autoenablesItems = false
         let newSticker = NSMenuItem(title: "New Sticker", action: nil, keyEquivalent: "")
         applyShortcut(shortcut, to: newSticker)
         menu.addItem(newSticker)
+        let openHome = NSMenuItem(title: "Open Stickermine…", action: nil, keyEquivalent: "")
+        menu.addItem(openHome)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Stickermine", action: nil, keyEquivalent: "q")
         quit.keyEquivalentModifierMask = [.command]
         menu.addItem(quit)
-        return (menu, newSticker, quit)
+        return (menu, newSticker, openHome, quit)
     }
 
     /// The item shows `shortcut` as its key equivalent (nothing when there is
@@ -122,6 +144,10 @@ final class StatusItemController: NSObject {
 
     @objc private func newSticker(_ sender: Any?) {
         onCapture?()
+    }
+
+    @objc private func openHome(_ sender: Any?) {
+        onOpenHome?()
     }
 
     @objc private func quit(_ sender: Any?) {

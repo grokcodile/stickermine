@@ -26,10 +26,11 @@ struct StatusItemControllerTests {
         #expect(asset == design)
     }
 
-    @Test func theMenuHasNewStickerWithTheShortcutAndQuit() {
+    @Test func theMenuHasNewStickerOpenStickermineAndQuit() {
         let built = StatusItemController.makeMenu(shortcut: .defaultCapture)
-        #expect(built.menu.items.map(\.title) == ["New Sticker", "", "Quit Stickermine"])
-        #expect(built.menu.items[1].isSeparatorItem)
+        #expect(built.menu.items.map(\.title) == ["New Sticker", "Open Stickermine…", "", "Quit Stickermine"])
+        #expect(built.menu.items[2].isSeparatorItem)
+        #expect(built.openHome.keyEquivalent == "")
         #expect(built.newSticker.keyEquivalent == "s")
         #expect(built.newSticker.keyEquivalentModifierMask == [.control, .option, .command])
         #expect(built.quit.keyEquivalent == "q")
