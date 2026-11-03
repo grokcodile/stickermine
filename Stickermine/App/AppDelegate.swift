@@ -19,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the fallback mode becomes the default?" (keep the value M2 chose). The
     /// hidden `clickThroughFallback` setting (spec section 12) overrides it either
     /// way.
-    static let clickThroughFallbackByDefault = false
+    nonisolated static let clickThroughFallbackByDefault = Settings.clickThroughFallbackByDefault
 
     private let log = Logger(subsystem: "com.ethan.stickermine", category: "app")
     private var library: LibraryController?
@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // LSUIElement already makes this an agent app; saying so in code keeps it
         // true even for a launch whose Info.plist was not the one we built.
         NSApp.setActivationPolicy(.accessory)
+        Settings.register(in: .standard)
         if ProcessInfo.processInfo.arguments.contains(StyleGallery.launchArgument) {
             // Debug: render the style gallery and quit, without touching the library.
             StyleGallery.runAndQuit()
@@ -71,9 +72,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let screens = LiveScreenProvider()
         let stickers = StickerManager(library: library, screens: screens, renderer: renderer)
         let defaults = UserDefaults.standard
-        // Keys from spec section 12; M6's Settings enum takes these over.
-        stickers.setSharingHidden(defaults.object(forKey: "hideFromSharing") as? Bool ?? true)
-        if defaults.object(forKey: "clickThroughFallback") as? Bool ?? Self.clickThroughFallbackByDefault {
+        stickers.setSharingHidden(defaults.hideFromSharing)
+        if defaults.clickThroughFallback {
             stickers.enableClickThroughFallback()
         }
         stickers.startObservingDisplayChanges()

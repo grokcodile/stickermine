@@ -123,7 +123,8 @@ struct LibraryModelTests {
                                  "StyleRecipes.swift", "PuffyKernel.swift", "SurfaceContents.swift",
                                  "Shortcut.swift", "CaptureClassifier.swift", "MaskSampler.swift",
                                  "HoleFiller.swift", "CutoutEngine.swift", "PickerModel.swift",
-                                 "EditGeometry.swift", "LibraryEditing.swift"]
+                                 "EditGeometry.swift", "LibraryEditing.swift", "Settings.swift",
+                                 "SystemShortcuts.swift", "LaunchPlan.swift", "TutorialLayout.swift"]
         let files = SourceFiles.swiftFiles().filter { pure.contains($0.lastPathComponent) }
         #expect(!files.isEmpty)
         for url in files {
