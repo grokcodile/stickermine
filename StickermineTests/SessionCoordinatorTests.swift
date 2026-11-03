@@ -151,6 +151,15 @@ struct SessionCoordinatorTests {
         #expect(h.recorder.activity.isEmpty)
     }
 
+    @Test func homesTurnOnButtonShowsThePermissionPanelWithoutASession() throws {
+        let h = try Self.harness(script: "exit 0", granted: false)
+        defer { try? FileManager.default.removeItem(at: h.folder) }
+        h.session.showPermissionPanel()
+        #expect(h.recorder.permissionPanels == 1)
+        #expect(!h.session.isActive)
+        #expect(h.recorder.activity.isEmpty)
+    }
+
     // MARK: The main path, past the capture
 
     /// What a main-path test drives. The coordinator hands the picker and the

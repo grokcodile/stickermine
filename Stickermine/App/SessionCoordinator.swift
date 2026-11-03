@@ -137,6 +137,12 @@ final class SessionCoordinator {
         end()
     }
 
+    /// Home's Screen Recording "Turn On…" button: the same permission panel
+    /// a capture without access shows (spec section 14).
+    func showPermissionPanel() {
+        presentPermission()
+    }
+
     // MARK: Steps
 
     private func captureFinished(_ outcome: CaptureOutcome, session: Int) {
