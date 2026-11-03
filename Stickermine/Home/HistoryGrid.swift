@@ -87,3 +87,73 @@ final class ThumbnailCache {
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 }
+
+/// The grid of every sticker ever made (spec section 13). A click re-places
+/// one (the style-only picker, then placement); a right-click offers Delete
+/// from History, which asks first.
+struct HistoryGrid: View {
+    @ObservedObject var model: HomeModel
+
+    private let columns = [GridItem(.adaptive(minimum: 104, maximum: 136), spacing: 12)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("History")
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+            if model.history.isEmpty {
+                Text(HomeModel.emptyHistoryText)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 96)
+            } else {
+                LazyVGrid(columns: columns, spacing: 12) {
+                    ForEach(model.history) { record in
+                        HistoryCell(record: record, url: model.pngURL(for: record.id), thumbnails: model.thumbnails,
+                                    canEdit: !model.isReadOnly,
+                                    onClick: { model.replace(record.id) },
+                                    onDelete: { model.requestDelete(record.id) })
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct HistoryCell: View {
+    let record: StickerRecord
+    let url: URL
+    let thumbnails: ThumbnailCache
+    let canEdit: Bool
+    let onClick: () -> Void
+    let onDelete: () -> Void
+
+    @State private var image: CGImage?
+
+    var body: some View {
+        Button(action: onClick) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.primary.opacity(0.05))
+                if let image {
+                    Image(decorative: image, scale: 1)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .padding(10)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            .frame(height: 104)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(canEdit ? "Place this sticker again" : HUD.readOnlyMessage)
+        .contextMenu {
+            Button("Delete from History…", role: .destructive, action: onDelete)
+                .disabled(!canEdit)
+        }
+        .task(id: record.id) {
+            image = await thumbnails.thumbnail(for: record.id, at: url)
+        }
+    }
+}
