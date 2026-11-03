@@ -64,7 +64,7 @@ Failure modes the spec implies but unit tests can't fully pin down, most likely 
 ```
 Stickermine/
   App/        StickermineApp.swift, AppDelegate.swift, SessionCoordinator.swift, StatusItemController.swift,
-              HotkeyCenter.swift, Shortcut.swift, SystemShortcuts.swift, SingleInstance.swift, LoginItem.swift
+              HotkeyCenter.swift, Shortcut.swift, SystemShortcuts.swift, SingleInstance.swift, LoginItem.swift, Settings.swift, LaunchPlan.swift
   Capture/    CaptureService.swift, CaptureClassifier.swift, CutoutEngine.swift, MaskSampler.swift, HoleFiller.swift,
               StyleParameters.swift, StyleRenderer.swift, PuffyKernel.swift, MasterImage.swift
   Picker/     PickerPanel.swift, PickerModel.swift, PickerView.swift, PlacementSession.swift
@@ -73,8 +73,8 @@ Stickermine/
   Model/      Library.swift, LibraryStore.swift, LibraryController.swift, LayoutResolver.swift, DisplayRegistry.swift,
               ScreenProvider.swift
   Home/       HomeWindowController.swift, HomeView.swift, HistoryGrid.swift, SettingsSection.swift,
-              ShortcutRecorder.swift, AboutPopover.swift, UpdateStrip.swift
-  Onboarding/ TutorialStickers.swift, PermissionPanel.swift, SupportAsk.swift
+              ShortcutRecorder.swift, AboutPopover.swift, UpdateStrip.swift, HomeModel.swift
+  Onboarding/ TutorialStickers.swift, TutorialLayout.swift, PermissionPanel.swift, SupportAsk.swift
   Updater/    Updater.swift
   UI/         HUD.swift
   Assets.xcassets/ (AppIcon, MenuBarGlyph, Maple)
@@ -332,6 +332,7 @@ extension AppDelegate {                                         // test-host gua
     func deleteSticker(_ sticker: UUID)
     func panel(for placement: UUID) -> StickerPanel?
     func setSharingHidden(_ hidden: Bool)                       // turning hiding off recreates the panels that stay hidden
+    func masterChanged(for sticker: UUID)                       // [M6] re-render every placement of a master changed in place (tutorial 1)
     var editingPlacement: UUID? { get }                         // [M5] editor?.placementID
     func endEditing(discardGesture: Bool)                       // [M5] true: a gesture or drag in progress is discarded; hands focus back
     @discardableResult func endEditing(discardGesture: Bool, returningFocus: Bool) -> NSRunningApplication?   // [M5] false: returns the app instead (a session takes over)
@@ -379,7 +380,8 @@ enum StickerGeometry {                                          // [M2] pure pos
     func start(); func stop(); func update(at point: NSPoint); private(set) weak var activePanel: NSPanel?
     nonisolated static func hitIndex(at p: CGPoint, in candidates: [Candidate]) -> Int?
 }
-extension AppDelegate { static let clickThroughFallbackByDefault: Bool }   // [M2] from the spike results
+extension AppDelegate { nonisolated static let clickThroughFallbackByDefault: Bool }   // [M2] from the spike results; [M6] nonisolated, = Settings.clickThroughFallbackByDefault
+extension AppDelegate { func showHome(checkingForUpdate: Bool = true) }   // [M6] reopen, showHome notification, Open Stickermine…, ⌘,
 enum EditGeometry {                                             // [M5] pure editing math (Stickers/EditGeometry.swift)
     static let snapStep: Double; static let minimumLongSide: Double; static let gestureHeadroom: Double   // 15°, 48 pt, 2
     struct KnobChange: Equatable { let scale: Double; let rotation: Double }
@@ -547,6 +549,8 @@ struct PermissionPanelState: Equatable {                                        
 @MainActor final class StatusItemController: NSObject {                           // [M4] App/StatusItemController.swift
     init(shortcut: Shortcut?); var onCapture: (() -> Void)?; var onQuit: (() -> Void)?
     var sessionActive: Bool; func setShortcut(_ shortcut: Shortcut?)
+    var onOpenHome: (() -> Void)?; var isVisible: Bool; var buttonScreenFrame: CGRect? { get }   // [M6] Open Stickermine…, showMenuBarIcon, the support ask's anchor
+    static func makeMenu(shortcut: Shortcut?) -> (menu: NSMenu, newSticker: NSMenuItem, openHome: NSMenuItem, quit: NSMenuItem)   // [M6] gains openHome
 }
 @MainActor final class SessionCoordinator {
     init(capture: CaptureService, cutout: CutoutEngine, stickers: StickerManager, library: LibraryController, store: LibraryStore, renderer: StyleRenderer,
@@ -562,6 +566,7 @@ struct PermissionPanelState: Equatable {                                        
     enum Stage: Equatable { case idle, capturing, analyzing, picking, saving, placing }; private(set) var stage: Stage   // [M4]
     var onPlaced: ((_ placement: UUID, _ sticker: UUID) -> Void)?                 // [M4] M6's support-ask counter
     private(set) var currentSticker: UUID?                                         // [M4] Delete from History cancels its session
+    func showPermissionPanel()                                  // [M6] Home's Turn On…
 }
 ```
 
@@ -576,11 +581,113 @@ struct Shortcut: Codable, Equatable {                            // [M4] App/Sho
     static let fKeyCodes: [UInt32]; var menuKeyEquivalent: String? { get }; static func keyName(_ code: UInt32) -> String   // [M4]
 }
 
-enum SystemShortcuts { static func conflicts(with s: Shortcut) -> Bool }   // CopySymbolicHotKeys
+enum SystemShortcuts {                                           // [M6] App/SystemShortcuts.swift
+    static func conflicts(with s: Shortcut) -> Bool              // CopySymbolicHotKeys
+    struct Entry: Equatable { let keyCode: UInt32; let modifiers: UInt32; let enabled: Bool }   // [M6] one table row
+    static let modifierMask: UInt32; static func entries(from table: [[String: Any]]) -> [Entry]   // [M6] ⌘⇧⌥⌃ only (the fn bit is ignored)
+    static func conflicts(with shortcut: Shortcut, in entries: [Entry]) -> Bool; static func liveTable() -> [[String: Any]]   // [M6]
+}
 @MainActor final class HotkeyCenter { func register(_ s: Shortcut?, handler: @escaping () -> Void); func suspend(); func resume()
     init(); static let signature: OSType; private(set) var lastStatus: OSStatus; var isRegistered: Bool { get }; func invalidate(); func fire() }   // [M4] 'STKM'; register(nil) registers nothing
-enum Settings {                                                  // UserDefaults keys and typed accessors (spec 12)
-    static func register(in defaults: UserDefaults)
+enum Settings {                                                  // UserDefaults keys and typed accessors (spec 12); [M6] App/Settings.swift
+    static let clickThroughFallbackByDefault: Bool               // [M6] the spike's decision (M2), moved here so pure Settings never reads AppDelegate
+    static func register(in defaults: UserDefaults)              // [M6] never written to disk; includes the hidden clickThroughFallback
+    enum Key { static let captureShortcut, showMenuBarIcon, launchAtLogin, hideFromSharing, didFirstRun,
+               didRequestScreenCapture, ownPlacementsCount, supportAskShown, clickThroughFallback: String }   // [M6] the spec's names
+    static func storedValue(for shortcut: Shortcut?) -> [String: Int]; static func shortcut(fromStored value: Any?) -> Shortcut?   // [M6] {k, m}; [:] = none
+}
+extension UserDefaults {                                         // [M6] each getter falls back to the spec default
+    var captureShortcut: Shortcut?; var showMenuBarIcon: Bool; var launchAtLogin: Bool; var hideFromSharing: Bool
+    var didFirstRun: Bool; var didRequestScreenCapture: Bool; var ownPlacementsCount: Int; var supportAskShown: Bool
+    var clickThroughFallback: Bool
+}
+enum ShortcutRecording { enum Outcome: Equatable { case cancel, clear, reject, record(Shortcut) }   // [M6] Home/ShortcutRecorder.swift
+    static func carbonModifiers(_ flags: NSEvent.ModifierFlags) -> UInt32; static func outcome(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Outcome }
+@MainActor final class ShortcutRecorderButton: NSButton {      // [M6] Pullcord's RecorderButton rules; one listens at a time
+    private(set) static weak var active: ShortcutRecorderButton?; static let listeningTitle: String; static let emptyTitle: String
+    var shortcut: Shortcut?; var onChange: ((Shortcut?) -> Void)?; var onRecordingChange: ((Bool) -> Void)?; var onRejected: (() -> Void)?
+    private(set) var isRecording: Bool; init(shortcut: Shortcut?)
+    func beginRecording(); @discardableResult func handle(_ event: NSEvent) -> Bool; func cancelRecording()
+}
+struct ShortcutRecorder: NSViewRepresentable { let shortcut: Shortcut?; let onChange: (Shortcut?) -> Void
+    let onRecordingChange: (Bool) -> Void; let onRejected: () -> Void }   // [M6]
+@MainActor enum SingleInstance {                                 // [M6] App/SingleInstance.swift, Pullcord's yieldToRunningInstance
+    nonisolated static let showHomeNotification: Notification.Name   // com.ethan.stickermine.showHome
+    struct Copy: Equatable { let pid: Int32; let launchDate: Date? }
+    nonisolated static func incumbent(among others: [Copy], mine: Copy, now: Date = Date()) -> Copy?
+    static func runningIncumbent() -> NSRunningApplication?; static func yield(to incumbent: NSRunningApplication, userLaunch: Bool) -> Never
+    nonisolated static func isLoginLaunch(_ event: NSAppleEventDescriptor?) -> Bool
+}
+struct LaunchPlan: Equatable { var opensHome: Bool; var placesTutorials: Bool; var checksForUpdateAfterLogin: Bool   // [M6] pure
+    static let loginUpdateCheckDelay: TimeInterval; static func decide(loginLaunch: Bool, didFirstRun: Bool, libraryIsEmpty: Bool, readOnly: Bool) -> LaunchPlan }
+@MainActor protocol LoginItemService: AnyObject { var status: SMAppService.Status { get }; func register() throws; func unregister() throws; func openSystemSettings() }   // [M6]
+@MainActor final class LiveLoginItemService: LoginItemService { init() }   // [M6] SMAppService.mainApp
+@MainActor final class LoginItem { enum State: Equatable { case on, off, requiresApproval }   // [M6] App/LoginItem.swift
+    init(service: LoginItemService? = nil, defaults: UserDefaults = .standard); var state: State { get }
+    func applyAtLaunch(); func setEnabled(_ on: Bool); func openSystemSettings() }
+enum UpdateState: Equatable { case upToDate, available, downloading, updating, failed }   // [M6] Updater/Updater.swift
+@MainActor final class Updater: ObservableObject {              // [M6] Pullcord's updater; only Home open, the About line and once after a login launch
+    nonisolated static let latestReleaseURL, dmgURL, releasesPageURL: URL; nonisolated static let dmgName, caskName, installedBundlePath, helperScriptName: String
+    nonisolated static let caskroomPaths, brewPaths: [String]; nonisolated static let watchdogInterval: TimeInterval   // 180
+    struct Release: Equatable { let version: String; let installable: Bool }
+    @Published private(set) var state: UpdateState; @Published private(set) var latestVersion: String?; let appVersion: String
+    init(appVersion: String = Updater.bundleVersion, fetch: (() async -> Data?)? = nil, beforeHelper: @escaping () -> Void)
+    nonisolated static var bundleVersion: String { get }; var isHomebrewManaged: Bool { get }
+    nonisolated static func isHomebrewManaged(caskroomExists: Bool, bundlePath: String) -> Bool
+    nonisolated static func isVersion(_ a: String, newerThan b: String) -> Bool; nonisolated static func release(from data: Data) -> Release?
+    nonisolated static func liveFetch() async -> Data?; nonisolated static func helperScript(brew: String, bundle: String, pid: Int32) -> String
+    nonisolated static func brewPath() -> String?
+    func check(completion: ((Bool) -> Void)? = nil); func handle(_ release: Release); func performUpdate()
+}
+enum HistoryList { static func items(in library: Library) -> [StickerRecord]; static let deleteTitle: String   // [M6] Home/HistoryGrid.swift
+    static func deleteMessage(placementCount: Int) -> String }
+@MainActor protocol StickerSession: AnyObject { var currentSticker: UUID? { get }; func cancel() }   // [M6] SessionCoordinator conforms
+@MainActor enum HistoryDeletion { static func delete(_ sticker: UUID, session: StickerSession?, stickers: StickerManager, thumbnails: ThumbnailCache?) }   // [M6]
+@MainActor final class ThumbnailCache { static let maxPixelSize: Int; init(); func cached(_ sticker: UUID) -> CGImage?   // [M6] 256 px, NSCache
+    func thumbnail(for sticker: UUID, at url: URL) async -> CGImage?; func remove(_ sticker: UUID)
+    nonisolated static func makeThumbnail(at url: URL, maxPixelSize: Int = ThumbnailCache.maxPixelSize) -> CGImage? }
+@MainActor final class HomeModel: ObservableObject {             // [M6] Home/HomeModel.swift; writes the settings, acts through Actions
+    struct Actions { var newSticker, fixScreenRecording, relaunch, quit: () -> Void; var replace, delete: (UUID) -> Void
+        var shortcutChanged: (Shortcut?) -> Void; var recordingChanged, menuBarIconChanged, sharingHiddenChanged: (Bool) -> Void }
+    struct PendingDelete: Equatable, Identifiable { let id: UUID; let message: String }; static let emptyHistoryText: String
+    @Published private(set) var history: [StickerRecord], isReadOnly: Bool, shortcut: Shortcut?, shortcutConflicts: Bool, chordRejected: Bool
+    @Published private(set) var showMenuBarIcon: Bool, loginState: LoginItem.State, hideFromSharing: Bool, screenRecordingOn: Bool, screenRecordingRequested: Bool
+    @Published var sessionActive: Bool; @Published var pendingDelete: PendingDelete?
+    let library: LibraryController; let thumbnails: ThumbnailCache; let updater: Updater
+    init(library: LibraryController, defaults: UserDefaults, loginItem: LoginItem, access: ScreenRecordingAccess, thumbnails: ThumbnailCache,
+         updater: Updater, conflicts: @escaping (Shortcut) -> Bool = { SystemShortcuts.conflicts(with: $0) }, actions: Actions)
+    func refresh(); func libraryChanged(); func pngURL(for sticker: UUID) -> URL; func newSticker(); func replace(_ sticker: UUID)
+    func requestDelete(_ sticker: UUID); func confirmDelete(); func cancelDelete(); func setShortcut(_ shortcut: Shortcut?)
+    func recordingChanged(_ recording: Bool); func rejectChord(); func setShowMenuBarIcon(_ on: Bool); func setLaunchAtLogin(_ on: Bool)
+    func openLoginItems(); func setHideFromSharing(_ on: Bool); func fixScreenRecording(); func relaunch(); func quit()
+}
+enum SettingsText; enum AboutLinks { struct Row; static let website, repo, kofi, issues: URL; static let rows: [Row] }; enum VersionCheck   // [M6] Home's words, pure
+struct HistoryGrid: View; struct SettingsSection: View; struct AboutPopover: View; struct UpdateStrip: View; struct HomeView: View   // [M6] SwiftUI
+@MainActor final class HomeWindow: NSWindow { nonisolated static func isClose(_ event: NSEvent) -> Bool }   // [M6] ⌘W
+@MainActor final class HomeWindowController: NSObject, NSWindowDelegate {   // [M6] Home/HomeWindowController.swift
+    static let initialSize: CGSize; static let minimumSize: CGSize   // 640 × 640; 560 × 480
+    let window: HomeWindow; let model: HomeModel; var isVisible: Bool { get }
+    init(model: HomeModel, mainVisibleFrame: @escaping () -> CGRect?, openURL: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) })
+    static func makeWindow() -> HomeWindow; func show(); func close()   // becoming key refreshes; resigning key or closing stops the recorder
+}
+enum TutorialLayout { static let margin, gap, minimumColumn: CGFloat; static let rotations: [Double]   // [M6] Onboarding/TutorialLayout.swift, pure
+    struct Item: Equatable { let rect: CGRect; let pose: Pose }; static func homeFrame(size: CGSize, in visibleFrame: CGRect) -> CGRect
+    static func homeSize(preferred: CGSize, minimum: CGSize, in visibleFrame: CGRect) -> CGSize   // Home's first size, smaller on a small display
+    static func layout(naturalSizes: [CGSize], rotations: [Double] = rotations, frame: CGRect, visibleFrame: CGRect, homeSize: CGSize) -> [Item] }
+@MainActor enum TutorialArt { static func shortcutText(for shortcut: Shortcut?) -> String; static func masters(shortcut: Shortcut?) -> [CGImage]?   // [M6]
+    static func shortcutCard(for shortcut: Shortcut?) -> CGImage?; static func card(text: String, fill: NSColor, textColor: NSColor) -> CGImage?
+    static func mapleWithBubble(_ maple: CGImage) -> CGImage?; static func bubblePath() -> CGPath }
+@MainActor final class TutorialStickers { static let style: StickerStyle   // [M6] .shadow
+    init(library: LibraryController, stickers: StickerManager, screens: ScreenProvider, defaults: UserDefaults)
+    func placeFirstRun(shortcut: Shortcut?, homeSize: CGSize, completion: ((Bool) -> Void)? = nil); func shortcutChanged(to shortcut: Shortcut?, completion: (() -> Void)? = nil) }
+enum SupportAskRule { static let threshold: Int; static func afterPlacement(count: Int, alreadyShown: Bool, isTutorial: Bool) -> (count: Int, show: Bool) }   // [M6]
+@MainActor final class SupportAskPanel: NSPanel                  // [M6] key only once clicked
+@MainActor final class SupportAsk {                              // [M6] Onboarding/SupportAsk.swift
+    nonisolated static let message, coffeeTitle, laterTitle: String; nonisolated static let kofiURL: URL; nonisolated static let showDelay: TimeInterval
+    nonisolated static let gap, edgeInset, shadowPadding: CGFloat
+    init(defaults: UserDefaults = .standard, openURL: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }, anchor: @escaping () -> CGRect?, fallbackArea: @escaping () -> CGRect?, showDelay: TimeInterval = SupportAsk.showDelay)
+    private(set) var panel: SupportAskPanel?; var isVisible: Bool { get }; func placementClicked(isTutorial: Bool); func show(); func dismiss()
+    static func makePanel() -> SupportAskPanel; nonisolated static func frame(size: CGSize, anchor: CGRect?, visibleFrame: CGRect) -> CGRect
 }
 ```
 
